@@ -41,7 +41,11 @@ async def test_run_problem_with_mocked_evolution(
     )
 
     mock_run = AsyncMock(return_value=fake_result)
-    with patch("qed.engine.run._run_evolution_async", new=mock_run):
+    mock_resolve = AsyncMock(return_value="gemini-2.5-flash")
+    with (
+        patch("qed.engine.run._run_evolution_async", new=mock_run),
+        patch("qed.engine.run.resolve_flash_model", new=mock_resolve),
+    ):
         summary: dict[str, Any] = await run_problem(
             problem_id="circle_packing_n26",
             iterations=5,
