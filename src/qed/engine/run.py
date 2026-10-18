@@ -90,7 +90,10 @@ async def resolve_flash_model(
         client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base, timeout=timeout)
         models_page = await client.models.list()
         available_ids: list[str] = [m.id for m in models_page.data]
-        if requested_model in available_ids:
+        if (
+            requested_model in available_ids
+            or f"models/{requested_model}" in available_ids
+        ):
             return requested_model
 
         # Filter for flash models
