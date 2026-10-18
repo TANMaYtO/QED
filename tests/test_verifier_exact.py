@@ -747,27 +747,160 @@ def test_integer_score_printed_as_ratio_and_cli_output(
     radii_bad[0] = "0"
     res_bad = verify_packing_exact(centers, radii_bad)
     formatted_bad = format_verification_output(res_bad)
-    assert formatted_bad.startswith("INVALID 1 violation\nnon_positive_radius:")
+    assert formatted_bad.startswith("INVALID\nnon_positive_radius:")
+    assert formatted_bad.splitlines()[0] == "INVALID"
 
-    # 5. Test CLI exit code 1 on format error (missing file)
+    # 5. Test CLI exit code 1 on format error (cannot read file)
     code_missing = verify_file_cli(tmp_path / "missing.json")
     assert code_missing == 1
     captured_missing = capsys.readouterr()
-    assert captured_missing.out.startswith("INVALID format_error:")
+    assert captured_missing.out.strip() == "INVALID format_error: cannot read file"
 
-    # 6. Test CLI exit code 1 on format error within VerificationResult
+    # 6. Test CLI exit code 1 on corrupt JSON content (ValueError / TypeError)
+    corrupt_file = tmp_path / "corrupt.json"
+    corrupt_file.write_text("{invalid json", encoding="utf-8")
+    code_corrupt = verify_file_cli(corrupt_file)
+    assert code_corrupt == 1
+    captured_corrupt = capsys.readouterr()
+    assert captured_corrupt.out.startswith("INVALID format_error: Invalid JSON")
+
+    # 7. Test CLI exit code 1 on format error within VerificationResult
     res_format_err = verify_packing_exact(centers[:10], radii_1[:10])
     formatted_format_err = format_verification_output(res_format_err)
     assert formatted_format_err.startswith("INVALID format_error:")
 
-    # 7. Test CLI main entry point with no arguments
+    # 8. Test CLI main entry point with no arguments
     monkeypatch.setattr(sys, "argv", ["verifier_exact.py"])
     with pytest.raises(SystemExit) as exit_info_no_arg:
         main()
     assert exit_info_no_arg.value.code == 1
 
-    # 8. Test CLI main entry point with valid file
+    # 9. Test CLI main entry point with valid file
     monkeypatch.setattr(sys, "argv", ["verifier_exact.py", str(valid_file)])
     with pytest.raises(SystemExit) as exit_info_valid:
         main()
     assert exit_info_valid.value.code == 0
+
+
+def test_geometry_invalid_first_line_is_exact_invalid() -> None:
+    """Test first line of geometry-invalid construction is exactly 'INVALID'."""
+    centers, radii = make_valid_26_packing()
+    radii[0] = "0"
+    res = verify_packing_exact(centers, radii)
+    assert res.ok is False
+    formatted: str = format_verification_output(res)
+    lines: list[str] = formatted.splitlines()
+    assert lines[0] == "INVALID"
+    assert len(lines) == 2
+    assert lines[1].startswith("non_positive_radius:")
+
+
+def test_evaluation_evaluates_all_constraints_without_short_circuit() -> None:
+    """Test evaluation checks all circles and pairs with no short-circuiting."""
+    centers, radii = make_valid_26_packing()
+    # 1. Circle 0: non-positive radius
+    radii[0] = "-1/10"
+    # 2. Circle 1: left breach (x - r < 0)
+    centers[1] = ("1/20", "1/2")
+    radii[1] = "1/10"
+    # 3. Circle 2: right breach (1 - (x + r) < 0)
+    centers[2] = ("19/20", "1/2")
+    radii[2] = "1/10"
+    # 4. Circle 3: bottom breach (y - r < 0)
+    centers[3] = ("1/2", "1/20")
+    radii[3] = "1/10"
+    # 5. Circle 4: top breach (1 - (y + r) < 0)
+    centers[4] = ("1/2", "19/20")
+    radii[4] = "1/10"
+    # 6. Circles 5 and 6: overlap
+    centers[5] = ("1/2", "1/2")
+    radii[5] = "1/10"
+    centers[6] = ("1/2", "1/2")
+    radii[6] = "1/10"
+
+    res = verify_packing_exact(centers, radii)
+    assert res.ok is False
+    types: set[str] = {v.violation_type for v in res.violations}
+    assert "non_positive_radius" in types
+    assert "boundary_left_breach" in types
+    assert "boundary_right_breach" in types
+    assert "boundary_bottom_breach" in types
+    assert "boundary_top_breach" in types
+    assert "circle_overlap" in types
+    assert len(res.violations) >= 6
+
+
+def test_unreadable_file_cli_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test unreadable or missing file prints 'cannot read file' error."""
+    missing_file: Path = tmp_path / "nonexistent_file.json"
+    code: int = verify_file_cli(missing_file)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "INVALID format_error: cannot read file"
+
+
+def test_length_cap_applies_to_decoded_string() -> None:
+    """Test 100-character cap applies to DECODED string after escape expansion."""
+    centers, radii = make_valid_26_packing()
+    # 98 '1's escaped as '\u0031': raw JSON length is >500 chars,
+    # but decoded Python string is '0.' + 98 '1's = 100 chars
+    escaped_100_val: str = r"\u0030." + (r"\u0031" * 98)
+    raw_centers = [[c[0], c[1]] for c in centers]
+    raw_centers[0] = [escaped_100_val, "1/10"]
+    raw_payload_100: str = (
+        '{"centers": '
+        + json.dumps(raw_centers)
+        .replace('"\\\\u0030', '"\\u0030')
+        .replace('"\\\\u0031', '"\\u0031')
+        .replace("\\\\u0031", "\\u0031")
+        + ', "radii": '
+        + json.dumps(radii)
+        + "}"
+    )
+    parsed_c_100, _ = parse_construction_json(raw_payload_100)
+    assert len(parsed_c_100[0][0]) == 100
+
+    # 99 '1's: decoded length is 101 chars, must be rejected
+    escaped_101_val: str = r"\u0030." + (r"\u0031" * 99)
+    raw_centers[0] = [escaped_101_val, "1/10"]
+    raw_payload_101: str = (
+        '{"centers": '
+        + json.dumps(raw_centers)
+        .replace('"\\\\u0030', '"\\u0030')
+        .replace('"\\\\u0031', '"\\u0031')
+        .replace("\\\\u0031", "\\u0031")
+        + ', "radii": '
+        + json.dumps(radii)
+        + "}"
+    )
+    with pytest.raises(
+        ValueError, match="Number string exceeds maximum allowed length"
+    ):
+        parse_construction_json(raw_payload_101)
+
+
+def test_spec_failure_example_format() -> None:
+    """Test spec failure example block contains INVALID and separate lines."""
+    spec_path: Path = (
+        Path(__file__).parent.parent
+        / "src"
+        / "qed"
+        / "problems"
+        / "circle_packing_n26"
+        / "spec.md"
+    )
+    content: str = spec_path.read_text(encoding="utf-8")
+    expected_block: str = (
+        "```\n"
+        "INVALID\n"
+        "circle_overlap: indices=(0, 1), slack=-3/100\n"
+        "boundary_left_breach: indices=(5,), slack=-1/20\n"
+        "```"
+    )
+    assert expected_block in content
+    lines: list[str] = expected_block.splitlines()
+    assert lines[1] == "INVALID"
+    assert lines[2] == "circle_overlap: indices=(0, 1), slack=-3/100"
+    assert lines[3] == "boundary_left_breach: indices=(5,), slack=-1/20"

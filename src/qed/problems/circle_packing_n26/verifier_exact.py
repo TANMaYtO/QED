@@ -558,9 +558,7 @@ def format_verification_output(result: VerificationResult) -> str:
     if format_errors:
         return f"INVALID format_error: {format_errors[0].details}"
 
-    count: int = len(result.violations)
-    noun: str = "violation" if count == 1 else "violations"
-    lines: list[str] = [f"INVALID {count} {noun}"]
+    lines: list[str] = ["INVALID"]
     for v in result.violations:
         lines.append(f"{v.violation_type}: indices={v.indices}, slack={v.slack}")
     return "\n".join(lines)
@@ -572,7 +570,10 @@ def verify_file_cli(path: str | Path) -> int:
         result: VerificationResult = verify_construction_file(path)
         print(format_verification_output(result))
         return 0 if result.ok else 1
-    except (ValueError, TypeError, FileNotFoundError) as exc:
+    except OSError:
+        print("INVALID format_error: cannot read file")
+        return 1
+    except (ValueError, TypeError) as exc:
         print(f"INVALID format_error: {exc}")
         return 1
 

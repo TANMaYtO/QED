@@ -91,7 +91,7 @@ The string must strictly conform to either the **Decimal** or **Fraction** forma
    A "digit" means the ASCII characters `0-9` only. Unicode digits (such as Arabic-Indic digits or fullwidth digits) are strictly forbidden and must be rejected.
 
 2. **Length Cap**:
-   Any number string longer than 100 characters (`len(s) > 100`) must be rejected.
+   The 100-character cap applies to the DECODED string. Any number string longer than 100 characters (`len(s) > 100`) after JSON decoding must be rejected.
 
 3. **Whole-String Match & Control Characters**:
    The match must span the entire string. Trailing newlines or whitespace (e.g. `'1/2\n'`) are strictly invalid. Any ASCII control character (codepoints 0–31 and 127) anywhere in the string causes immediate rejection.
@@ -121,7 +121,7 @@ The string must strictly conform to either the **Decimal** or **Fraction** forma
    - **Multiple operators/delimiters**: Multiple dots or slashes are forbidden (e.g. `"1.2.3"`, `"1/2/3"`).
    - **Non-numeric characters**: Alphabetic or trailing garbage is forbidden (e.g. `"abc"`, `"1/2abc"`).
    - **Empty string**: `""` is forbidden.
-   - **Strings exceeding 100 characters**: Length $> 100$.
+   - **Strings exceeding 100 characters**: Decoded string length $> 100$.
 
 #### Examples of Accepted Number Strings
 | String | Parsed Rational Value | Notes |
@@ -168,6 +168,8 @@ The string must strictly conform to either the **Decimal** or **Fraction** forma
 ### 5.3 Geometric Validity Rules in Plain Math
 Given parsed exact rational centers $(x_i, y_i) \in \mathbb{Q}^2$ and radii $r_i \in \mathbb{Q}$ for $i \in \{0, \dots, 25\}$:
 
+Every constraint instance is evaluated independently for every circle and every pair, with no short-circuiting. Informational violation lines list each violated instance once.
+
 1. **Circle Count**: Exactly 26 circles must be present.
 2. **Strict Positivity**:
    $$\forall i \in \{0, \dots, 25\}: \quad r_i > 0$$
@@ -192,20 +194,20 @@ Given parsed exact rational centers $(x_i, y_i) \in \mathbb{Q}^2$ and radii $r_i
 ### 5.4 Checker Output Convention
 Any conforming verification tool or checker script must follow these exact stdout and exit code rules:
 - **(a) Score Format**: The score is ALWAYS printed as `p/q` in lowest terms, even for integers (e.g. `'3/1'`, not `'3'`).
-- **(b) Format Error Handling**: Any file format error prints `INVALID format_error: <short message>` on the first line and exits with code 1.
+- **(b) Format Error Handling**: Any file format error prints `INVALID format_error: <short message>` on the first line and exits with code 1. A file that cannot be opened or read prints `INVALID format_error: cannot read file` and exits with code 1.
 - **(c) Exit Codes**: A valid construction exits with code 0; an invalid construction or format error exits with code 1.
-- **(d) Conformance Judgment**: Conformance is judged strictly on the **exit code** and the **FIRST output line**:
+- **(d) Conformance Judgment**: Conformance is judged strictly on the **exit code** and the **FIRST output line**. The first-line forms are strictly:
   - Valid construction (exit code 0): Line 1 starts with `VALID` followed by the irreducible rational score:
     ```
     VALID 38/15
     ```
-  - Invalid construction (exit code 1): Line 1 starts with `INVALID <violation_count> violations`:
+  - Invalid construction (exit code 1): Line 1 is exactly `INVALID` (no count):
     ```
-    INVALID 2 violations
+    INVALID
     ```
-    or for format errors:
+  - Format error (exit code 1): Line 1 starts with `INVALID format_error: <short message>` (for format errors only the prefix `INVALID format_error` is compared):
     ```
-    INVALID format_error: <short message>
+    INVALID format_error: cannot read file
     ```
 - **(e) Subsequent Violation Lines**: Later lines are informational but MUST use violation names from this closed list:
   1. `non_positive_radius`
@@ -216,9 +218,9 @@ Any conforming verification tool or checker script must follow these exact stdou
   6. `circle_overlap`
   7. `format_error`
 
-Example failure output for geometric violations:
+Example failure output for geometric violations (each violation on its own line):
 ```
-INVALID 2 violations
+INVALID
 circle_overlap: indices=(0, 1), slack=-3/100
 boundary_left_breach: indices=(5,), slack=-1/20
 ```
