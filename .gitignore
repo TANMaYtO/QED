@@ -42,6 +42,9 @@ htmlcov/
 runs/*
 !runs/.gitkeep
 
+# Temporary inspection files
+temp_*
+
 # OS and Editors
 .DS_Store
 Thumbs.db
