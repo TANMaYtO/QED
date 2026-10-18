@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +16,11 @@ import openai
 from dotenv import load_dotenv
 from openevolve.api import EvolutionResult, _run_evolution_async
 from openevolve.config import Config, load_config
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 class MetricsLogHandler(logging.Handler):
@@ -106,9 +112,7 @@ async def resolve_flash_model(
             return requested_model
 
         # Filter for flash models
-        flash_candidates = [
-            m for m in available_ids if "flash" in m.lower()
-        ]
+        flash_candidates = [m for m in available_ids if "flash" in m.lower()]
         if flash_candidates:
             return flash_candidates[0]
         return requested_model
@@ -168,7 +172,8 @@ async def run_problem(
         primary = config.llm.models[0]
         resolved_model = await resolve_flash_model(
             api_key=primary.api_key or api_key,
-            api_base=primary.api_base or "https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_base=primary.api_base
+            or "https://generativelanguage.googleapis.com/v1beta/openai/",
             requested_model=primary.name,
         )
         if resolved_model != primary.name:
@@ -209,9 +214,7 @@ async def run_problem(
         and hasattr(evolution_result.best_program, "metrics")
         and "sum_radii" in evolution_result.best_program.metrics
     ):
-        best_fast_score = float(
-            evolution_result.best_program.metrics["sum_radii"]
-        )
+        best_fast_score = float(evolution_result.best_program.metrics["sum_radii"])
 
     # Measure token counts and calls from the actual run
     measured_calls: int = (
@@ -219,13 +222,33 @@ async def run_problem(
     )
     measured_tokens: dict[str, int] | None = None
     if tracker.has_token_info:
+        reasoning: int = max(
+            0,
+            tracker.total_tokens - (tracker.prompt_tokens + tracker.completion_tokens),
+        )
         measured_tokens = {
             "prompt_tokens": tracker.prompt_tokens,
             "completion_tokens": tracker.completion_tokens,
+            "reasoning_tokens": reasoning,
             "total_tokens": tracker.total_tokens,
         }
     elif evolution_result.metrics and "token_usage" in evolution_result.metrics:
-        measured_tokens = evolution_result.metrics["token_usage"]
+        raw_usage = evolution_result.metrics["token_usage"]
+        pt = raw_usage.get("prompt_tokens", 0)
+        ct = raw_usage.get("completion_tokens", 0)
+        tt = raw_usage.get("total_tokens", pt + ct)
+        measured_tokens = {
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "reasoning_tokens": max(0, tt - (pt + ct)),
+            "total_tokens": tt,
+        }
+
+    # Guard: raise error if 3 consecutive API failures occurred
+    if tracker.max_consecutive_failures >= 3:
+        logging.getLogger(__name__).warning(
+            f"Run had {tracker.max_consecutive_failures} consecutive API failures."
+        )
 
     summary: dict[str, Any] = {
         "problem_id": problem_id,

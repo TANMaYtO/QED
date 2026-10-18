@@ -7,6 +7,11 @@ import sys
 from qed import __version__
 from qed.engine.run import run_problem
 
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the argument parser for the QED command line."""

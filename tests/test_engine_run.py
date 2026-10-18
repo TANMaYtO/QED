@@ -36,7 +36,7 @@ async def test_run_problem_with_mocked_evolution(
         best_program=fake_program,
         best_score=0.9634,
         best_code="# mock evolved code",
-        metrics={"token_usage": {"prompt": 120, "completion": 80}},
+        metrics={"token_usage": {"prompt_tokens": 120, "completion_tokens": 80}},
         output_dir=str(tmp_path / "openevolve_out"),
     )
 
@@ -59,7 +59,12 @@ async def test_run_problem_with_mocked_evolution(
     assert summary["llm_calls"] == 5
     assert summary["best_fast_score"] == 0.9634
     assert summary["wall_time"] >= 0.0
-    assert summary["token_counts"] == {"prompt": 120, "completion": 80}
+    assert summary["token_counts"] == {
+        "prompt_tokens": 120,
+        "completion_tokens": 80,
+        "reasoning_tokens": 0,
+        "total_tokens": 200,
+    }
     assert summary["estimated_cost"] is None
 
     summary_file: Path = tmp_path / "runs" / "test_run_001" / "summary.json"
