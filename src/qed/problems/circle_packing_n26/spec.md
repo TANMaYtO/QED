@@ -79,6 +79,7 @@ A construction file must be a single UTF-8 encoded JSON object with exactly two 
 Detailed JSON parsing rules:
 - **Decoded String Grammar**: The number grammar applies to the DECODED string value (so the JSON string `"\u0031/2"` is valid and equals $1/2$).
 - **Encoding & Integrity**: A UTF-8 byte-order mark (BOM), invalid UTF-8 byte sequences, or any trailing content after the top-level JSON value constitutes an immediate format error.
+- **Whitespace Outside JSON**: JSON whitespace means only ASCII space (`0x20`), horizontal tab (`0x09`), line feed (`0x0A`), and carriage return (`0x0D`). It is allowed before and after the top-level JSON value. Any other character outside the top-level JSON value (including `U+00A0`, `U+000B`, `U+000C`, `U+2028`, `U+FEFF`, and all other non-ASCII or control characters) constitutes a format error. An empty or whitespace-only file is a format error.
 - **Case Sensitivity**: Object keys are case-sensitive (`"centers"` and `"radii"` must be lowercase).
 - **Duplicate Keys**: Duplicate keys are strictly rejected even if their values are identical (e.g. duplicate `"radii"` keys).
 - **Shape & Type**: Top-level value must be an object. Missing keys, extra keys, non-list values, length not equal to 26, coordinate pairs with length not equal to 2, or non-string values (such as bare JSON floats `0.5`, integers, booleans, or null) constitute format errors.
@@ -217,6 +218,8 @@ Any conforming verification tool or checker script must follow these exact stdou
   5. `boundary_top_breach`
   6. `circle_overlap`
   7. `format_error`
+
+  Slack values must always be printed as an irreducible fraction `p/q` with $q \ge 1$ in lowest terms (e.g. `slack=-3/100`, `slack=-1/20`). A slack value of zero must be printed as `0/1`.
 
 Example failure output for geometric violations (each violation on its own line):
 ```

@@ -560,7 +560,8 @@ def format_verification_output(result: VerificationResult) -> str:
 
     lines: list[str] = ["INVALID"]
     for v in result.violations:
-        lines.append(f"{v.violation_type}: indices={v.indices}, slack={v.slack}")
+        slack_str = f"{v.slack.numerator}/{v.slack.denominator}"
+        lines.append(f"{v.violation_type}: indices={v.indices}, slack={slack_str}")
     return "\n".join(lines)
 
 
