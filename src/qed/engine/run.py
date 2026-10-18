@@ -36,15 +36,24 @@ class MetricsLogHandler(logging.Handler):
         msg: str = record.getMessage()
 
         if "LLM Token Usage" in msg:
-            self.llm_calls += 1
+            calls_match = re.search(r"\((\d+)\s+calls\)", msg)
+            if calls_match:
+                self.llm_calls = int(calls_match.group(1))
+            else:
+                self.llm_calls += 1
             self.consecutive_api_failures = 0
             pt_match = re.search(r"prompt_tokens=(\d+)", msg)
             ct_match = re.search(r"completion_tokens=(\d+)", msg)
             tt_match = re.search(r"total_tokens=(\d+)", msg)
             if pt_match and ct_match and tt_match:
-                self.prompt_tokens += int(pt_match.group(1))
-                self.completion_tokens += int(ct_match.group(1))
-                self.total_tokens += int(tt_match.group(1))
+                if calls_match:
+                    self.prompt_tokens = int(pt_match.group(1))
+                    self.completion_tokens = int(ct_match.group(1))
+                    self.total_tokens = int(tt_match.group(1))
+                else:
+                    self.prompt_tokens += int(pt_match.group(1))
+                    self.completion_tokens += int(ct_match.group(1))
+                    self.total_tokens += int(tt_match.group(1))
                 self.has_token_info = True
 
         if any(
