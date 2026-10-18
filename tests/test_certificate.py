@@ -38,6 +38,35 @@ def load_repro_cert() -> dict[str, Any]:
     return json.loads(REPRO_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+def create_test_run(
+    parent_dir: Path,
+    run_id: str = "mock_run_001",
+    score: str = "2.533333",
+) -> Path:
+    """Create a self-contained mock run directory for testing make_certificate."""
+    run_dir = parent_dir / run_id
+    best_dir = run_dir / "openevolve" / "best"
+    best_dir.mkdir(parents=True, exist_ok=True)
+
+    prog_code = (
+        "import numpy as np\n"
+        "def run_packing():\n"
+        "    grid = [i / 12 for i in (1, 3, 5, 7, 9)]\n"
+        "    pts = [[x, y] for y in grid for x in grid] + [[11 / 12, 11 / 12]]\n"
+        "    c = np.array(pts, dtype=float)\n"
+        "    r = np.full(26, 1 / 12, dtype=float)\n"
+        f"    return c, r, {score}\n"
+    )
+    (best_dir / "best_program.py").write_text(prog_code, encoding="utf-8")
+    summary = {
+        "run_id": run_id,
+        "iterations": 20,
+        "best_fast_score": float(score),
+    }
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    return run_dir
+
+
 def test_fixtures_exist_and_validate_schema() -> None:
     """Validate that both good fixtures exist and have zero schema errors."""
     assert DEMO_FIXTURE_PATH.exists()
@@ -250,11 +279,13 @@ def test_tamper_11_independent_checker_reports_different_score(
 
 def test_make_cert_reproduction_and_demonstration(tmp_path: Path) -> None:
     """Test generating certificates via make_certificate end-to-end."""
+    test_run = create_test_run(tmp_path)
     out_repro = tmp_path / "issued_repro.json"
     cert_repro = make_certificate(
-        run_id="circle_packing_n26_2b4ce989",
+        run_id=test_run.name,
+        runs_dir=tmp_path,
         claim_type="reproduction",
-        best_known_value="1787146240596586469/1000000000000000000",
+        best_known_value="216666666666666629/100000000000000000",
         best_known_url="https://example.com/test",
         out_path=out_repro,
     )
@@ -265,7 +296,8 @@ def test_make_cert_reproduction_and_demonstration(tmp_path: Path) -> None:
     # Demonstration claim (best_known omitted)
     out_demo = tmp_path / "issued_demo.json"
     cert_demo = make_certificate(
-        run_id="circle_packing_n26_2b4ce989",
+        run_id=test_run.name,
+        runs_dir=tmp_path,
         claim_type="demonstration",
         out_path=out_demo,
     )
@@ -276,10 +308,12 @@ def test_make_cert_reproduction_and_demonstration(tmp_path: Path) -> None:
 
 def test_make_cert_record_positive_margin(tmp_path: Path) -> None:
     """Test issuing a record claim with a positive margin exceeding best_known."""
+    test_run = create_test_run(tmp_path)
     out_record = tmp_path / "issued_record.json"
-    # Baseline 1.5 is less than score ~1.787
+    # Baseline 1.5 is less than score ~2.166
     cert_record = make_certificate(
-        run_id="circle_packing_n26_2b4ce989",
+        run_id=test_run.name,
+        runs_dir=tmp_path,
         claim_type="record",
         best_known_value="3/2",
         best_known_url="https://example.com/old_record",
@@ -292,11 +326,13 @@ def test_make_cert_record_positive_margin(tmp_path: Path) -> None:
 
 def test_make_cert_refuses_non_positive_margin(tmp_path: Path) -> None:
     """Test that make_certificate refuses record certificate if margin <= 0."""
+    test_run = create_test_run(tmp_path)
     out_path = tmp_path / "unwritten_record.json"
-    # Baseline 3.0 exceeds score ~1.787
+    # Baseline 3.0 exceeds score ~2.166
     with pytest.raises(ValueError, match="Record claim refused: margin"):
         make_certificate(
-            run_id="circle_packing_n26_2b4ce989",
+            run_id=test_run.name,
+            runs_dir=tmp_path,
             claim_type="record",
             best_known_value="3/1",
             best_known_url="https://example.com/impossible",
@@ -308,12 +344,14 @@ def test_make_cert_refuses_non_positive_margin(tmp_path: Path) -> None:
 
 def test_make_cert_validation_errors(tmp_path: Path) -> None:
     """Test error handling in make_certificate for invalid inputs."""
+    test_run = create_test_run(tmp_path)
     out_path = tmp_path / "should_not_exist.json"
 
     # Invalid claim type
     with pytest.raises(ValueError, match="Invalid claim_type"):
         make_certificate(
-            run_id="circle_packing_n26_2b4ce989",
+            run_id=test_run.name,
+            runs_dir=tmp_path,
             claim_type="invalid_type",
             out_path=out_path,
         )
@@ -322,6 +360,7 @@ def test_make_cert_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Run directory not found"):
         make_certificate(
             run_id="nonexistent_run_12345",
+            runs_dir=tmp_path,
             claim_type="demonstration",
             out_path=out_path,
         )
@@ -329,7 +368,8 @@ def test_make_cert_validation_errors(tmp_path: Path) -> None:
     # Reproduction missing best_known
     with pytest.raises(ValueError, match="Reproduction claim requires"):
         make_certificate(
-            run_id="circle_packing_n26_2b4ce989",
+            run_id=test_run.name,
+            runs_dir=tmp_path,
             claim_type="reproduction",
             out_path=out_path,
         )
@@ -337,7 +377,8 @@ def test_make_cert_validation_errors(tmp_path: Path) -> None:
     # Record missing best_known
     with pytest.raises(ValueError, match="Record claim requires"):
         make_certificate(
-            run_id="circle_packing_n26_2b4ce989",
+            run_id=test_run.name,
+            runs_dir=tmp_path,
             claim_type="record",
             out_path=out_path,
         )
@@ -368,9 +409,10 @@ def test_cli_verify_and_make_cert(
     assert "FAIL" in captured
 
     # CLI make-cert
+    test_run = create_test_run(tmp_path)
     out_cli = str(tmp_path / "cli_cert.json")
     args_mc = Args()
-    args_mc.run_id = "circle_packing_n26_2b4ce989"
+    args_mc.run_id = str(test_run)
     args_mc.claim_type = "demonstration"
     args_mc.best_known_value = None
     args_mc.best_known_url = None
@@ -730,18 +772,13 @@ def test_exact_verifier_exception_handling() -> None:
 
 def test_make_cert_malformed_summary_json(tmp_path: Path) -> None:
     """Test make_certificate resilience when summary.json is unparseable."""
+    test_run = create_test_run(tmp_path, run_id="run_bad_summary")
     out_cert = tmp_path / "cert_with_bad_summary.json"
-    # Copy smoke run fixture directory
-    real_run_dir = Path(__file__).parent.parent / "runs" / "circle_packing_n26_2b4ce989"
-    run_copy = tmp_path / "run_copy"
-    import shutil
-
-    shutil.copytree(real_run_dir, run_copy)
     # Write invalid JSON into summary.json
-    (run_copy / "summary.json").write_text("{broken json", encoding="utf-8")
+    (test_run / "summary.json").write_text("{broken json", encoding="utf-8")
 
     cert = make_certificate(
-        run_id="run_copy",
+        run_id=test_run.name,
         runs_dir=tmp_path,
         claim_type="demonstration",
         out_path=out_cert,
