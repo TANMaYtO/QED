@@ -6,6 +6,7 @@ and make_valid shrinker.
 """
 
 import json
+import sys
 from fractions import Fraction
 from pathlib import Path
 
@@ -14,15 +15,19 @@ import pytest
 from hypothesis import given, settings
 
 from qed.problems.circle_packing_n26.verifier_exact import (
+    VerificationResult,
     format_fraction_40_decimals,
+    format_verification_output,
     isqrt_lower_bound,
     load_construction,
     load_construction_async,
+    main,
     make_valid,
     parse_construction_json,
     parse_exact_fraction,
     verify_construction_file,
     verify_construction_file_async,
+    verify_file_cli,
     verify_packing_exact,
 )
 
@@ -145,12 +150,12 @@ def test_circle_count_violation() -> None:
     res_25 = verify_packing_exact(centers[:25], radii[:25])
     assert res_25.ok is False
     assert len(res_25.violations) == 1
-    assert res_25.violations[0].violation_type == "invalid_circle_count"
+    assert res_25.violations[0].violation_type == "format_error"
 
     # 27 circles
     res_27 = verify_packing_exact(centers + [("1/2", "1/2")], radii + ["1/10"])
     assert res_27.ok is False
-    assert res_27.violations[0].violation_type == "invalid_circle_count"
+    assert res_27.violations[0].violation_type == "format_error"
 
 
 def test_invalid_coordinate_dimension() -> None:
@@ -160,7 +165,7 @@ def test_invalid_coordinate_dimension() -> None:
     res = verify_packing_exact(centers, radii)
     assert res.ok is False
     assert len(res.violations) == 1
-    assert res.violations[0].violation_type == "invalid_coordinate_dimension"
+    assert res.violations[0].violation_type == "format_error"
 
 
 def test_non_positive_radius_violation() -> None:
@@ -561,3 +566,208 @@ def test_fixtures_against_expected_json() -> None:
             else:
                 with pytest.raises((ValueError, TypeError)):
                     load_construction(file_path)
+
+
+def test_unicode_digits_rejected() -> None:
+    """Test parse_exact_fraction rejects Unicode digits (Arabic-Indic, fullwidth)."""
+    with pytest.raises(ValueError, match="Non-ASCII characters"):
+        parse_exact_fraction("١/٢")
+    with pytest.raises(ValueError, match="Non-ASCII characters"):
+        parse_exact_fraction("１.２")
+
+
+def test_trailing_newline_and_control_chars_rejected() -> None:
+    """Test parse_exact_fraction rejects trailing newline and control characters."""
+    with pytest.raises(ValueError, match="Control characters"):
+        parse_exact_fraction("1/2\n")
+    with pytest.raises(ValueError, match="Control characters"):
+        parse_exact_fraction("1/2\r")
+    with pytest.raises(ValueError, match="Control characters"):
+        parse_exact_fraction("1/2\x00")
+    with pytest.raises(ValueError, match="Control characters"):
+        parse_exact_fraction("1/2\x1f")
+    with pytest.raises(ValueError, match="Control characters"):
+        parse_exact_fraction("1/2\x7f")
+
+
+def test_invalid_denominators_rejected() -> None:
+    """Test parse_exact_fraction rejects '1/02', '1/00', and '1/0'."""
+    with pytest.raises(ValueError, match="Invalid exact numeric string"):
+        parse_exact_fraction("1/02")
+    with pytest.raises(ValueError, match="Invalid exact numeric string"):
+        parse_exact_fraction("1/00")
+    with pytest.raises(ValueError, match="Invalid exact numeric string"):
+        parse_exact_fraction("1/0")
+
+
+def test_length_cap_100_characters() -> None:
+    """Test strings up to 100 chars accepted, >100 chars rejected."""
+    # 100 characters: "0." + 98 "1"s
+    exact_100: str = f"0.{'1' * 98}"
+    assert len(exact_100) == 100
+    res_100: Fraction = parse_exact_fraction(exact_100)
+    assert res_100 > 0
+
+    # 101 characters: "0." + 99 "1"s
+    exact_101: str = f"0.{'1' * 99}"
+    assert len(exact_101) == 101
+    with pytest.raises(
+        ValueError, match="Number string exceeds maximum allowed length"
+    ):
+        parse_exact_fraction(exact_101)
+
+
+def test_escaped_json_input_decoded() -> None:
+    """Test parse_construction_json decodes JSON escape sequences before parsing."""
+    centers, radii = make_valid_26_packing()
+    raw_centers = [[c[0], c[1]] for c in centers]
+    raw_centers[0] = [r"\u0031/10", r"\u0031/10"]
+    raw_radii = list(radii)
+    raw_radii[0] = r"\u0031/30"
+    raw_payload: str = (
+        '{"centers": '
+        + json.dumps(raw_centers).replace('"\\\\u0031', '"\\u0031')
+        + ', "radii": '
+        + json.dumps(raw_radii).replace('"\\\\u0031', '"\\u0031')
+        + "}"
+    )
+    assert r"\u0031" in raw_payload
+    parsed_centers, parsed_radii = parse_construction_json(raw_payload)
+    assert parsed_centers[0] == ("1/10", "1/10")
+    assert parsed_radii[0] == "1/30"
+
+
+def test_utf8_bom_rejected(tmp_path: Path) -> None:
+    """Test UTF-8 BOM is rejected by parser and file loader."""
+    centers, radii = make_valid_26_packing()
+    valid_json: str = json.dumps(
+        {
+            "centers": [[c[0], c[1]] for c in centers],
+            "radii": radii,
+        }
+    )
+    bom_str: str = f"\ufeff{valid_json}"
+    with pytest.raises(ValueError, match="UTF-8 byte-order mark"):
+        parse_construction_json(bom_str)
+
+    bom_file: Path = tmp_path / "bom_construction.json"
+    bom_file.write_bytes(b"\xef\xbb\xbf" + valid_json.encode("utf-8"))
+
+    with pytest.raises(ValueError, match="UTF-8 byte-order mark"):
+        load_construction(bom_file)
+
+
+@pytest.mark.asyncio
+async def test_utf8_bom_and_invalid_bytes_async(tmp_path: Path) -> None:
+    """Test UTF-8 BOM and invalid UTF-8 bytes are rejected asynchronously."""
+    bom_file: Path = tmp_path / "bom_async.json"
+    bom_file.write_bytes(b"\xef\xbb\xbf{}")
+    with pytest.raises(ValueError, match="UTF-8 byte-order mark"):
+        await load_construction_async(bom_file)
+
+    bad_utf8_file: Path = tmp_path / "bad_utf8.json"
+    bad_utf8_file.write_bytes(b'{"centers": \xff}')
+    with pytest.raises(ValueError, match="Invalid UTF-8 encoding"):
+        load_construction(bad_utf8_file)
+    with pytest.raises(ValueError, match="Invalid UTF-8 encoding"):
+        await load_construction_async(bad_utf8_file)
+
+
+def test_trailing_content_rejected() -> None:
+    """Test trailing content after top-level JSON is rejected."""
+    centers, radii = make_valid_26_packing()
+    valid_json: str = json.dumps(
+        {
+            "centers": [[c[0], c[1]] for c in centers],
+            "radii": radii,
+        }
+    )
+    trailing_json: str = f"{valid_json} extra"
+    with pytest.raises(ValueError, match="Invalid JSON content"):
+        parse_construction_json(trailing_json)
+
+
+def test_duplicate_keys_with_identical_values_rejected() -> None:
+    """Test duplicate keys rejected even if values are identical."""
+    centers, radii = make_valid_26_packing()
+    raw_payload: str = (
+        '{"centers": '
+        + json.dumps([[c[0], c[1]] for c in centers])
+        + ', "centers": '
+        + json.dumps([[c[0], c[1]] for c in centers])
+        + ', "radii": '
+        + json.dumps(radii)
+        + "}"
+    )
+    with pytest.raises(ValueError, match="Duplicate key in JSON construction"):
+        parse_construction_json(raw_payload)
+
+
+def test_integer_score_printed_as_ratio_and_cli_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test integer scores print as 'VALID p/1', and CLI handles exit codes 0 and 1."""
+    # 1. Test integer score formatting specifically for score of 3
+    res_int3 = VerificationResult(
+        ok=True,
+        exact_score=Fraction(3),
+        score_decimal=format_fraction_40_decimals(Fraction(3)),
+        violations=[],
+    )
+    formatted3 = format_verification_output(res_int3)
+    assert formatted3 == "VALID 3/1"
+
+    # 2. Test valid construction with integer score 1 (26 circles of radius 1/26)
+    centers, _ = make_valid_26_packing()
+    radii_1 = ["1/26"] * 26
+    res_int1 = verify_packing_exact(centers, radii_1)
+    assert res_int1.ok is True
+    assert res_int1.exact_score == Fraction(1)
+    formatted1 = format_verification_output(res_int1)
+    assert formatted1 == "VALID 1/1"
+
+    # 3. Test CLI exit code 0 on valid file
+    valid_file = tmp_path / "valid_int.json"
+    valid_file.write_text(
+        json.dumps(
+            {
+                "centers": [[c[0], c[1]] for c in centers],
+                "radii": radii_1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    code_valid = verify_file_cli(valid_file)
+    assert code_valid == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "VALID 1/1"
+
+    # 4. Test CLI exit code 1 on geometric violation
+    radii_bad = list(radii_1)
+    radii_bad[0] = "0"
+    res_bad = verify_packing_exact(centers, radii_bad)
+    formatted_bad = format_verification_output(res_bad)
+    assert formatted_bad.startswith("INVALID 1 violation\nnon_positive_radius:")
+
+    # 5. Test CLI exit code 1 on format error (missing file)
+    code_missing = verify_file_cli(tmp_path / "missing.json")
+    assert code_missing == 1
+    captured_missing = capsys.readouterr()
+    assert captured_missing.out.startswith("INVALID format_error:")
+
+    # 6. Test CLI exit code 1 on format error within VerificationResult
+    res_format_err = verify_packing_exact(centers[:10], radii_1[:10])
+    formatted_format_err = format_verification_output(res_format_err)
+    assert formatted_format_err.startswith("INVALID format_error:")
+
+    # 7. Test CLI main entry point with no arguments
+    monkeypatch.setattr(sys, "argv", ["verifier_exact.py"])
+    with pytest.raises(SystemExit) as exit_info_no_arg:
+        main()
+    assert exit_info_no_arg.value.code == 1
+
+    # 8. Test CLI main entry point with valid file
+    monkeypatch.setattr(sys, "argv", ["verifier_exact.py", str(valid_file)])
+    with pytest.raises(SystemExit) as exit_info_valid:
+        main()
+    assert exit_info_valid.value.code == 0

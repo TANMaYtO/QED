@@ -76,22 +76,29 @@ A construction file must be a single UTF-8 encoded JSON object with exactly two 
 - `"centers"`: a list of exactly 26 items. Each item must be a two-element list of strings: `[x_i, y_i]`.
 - `"radii"`: a list of exactly 26 strings: `r_i`.
 
-Any of the following constitutes an immediate format error (file rejection):
-- Missing keys (e.g. `"radii"` omitted).
-- Extra keys (e.g. a `"metadata"` or `"notes"` key present).
-- Duplicate keys in the JSON object (e.g. two `"radii"` keys; parsers must reject duplicate keys).
-- Top-level value is not a JSON object (e.g. a list or scalar).
-- `"centers"` length is not 26, or any coordinate pair is not a 2-element list.
-- `"radii"` length is not 26.
-- Any coordinate or radius is not a JSON string (e.g. bare JSON numbers `0.5`, booleans, null).
+Detailed JSON parsing rules:
+- **Decoded String Grammar**: The number grammar applies to the DECODED string value (so the JSON string `"\u0031/2"` is valid and equals $1/2$).
+- **Encoding & Integrity**: A UTF-8 byte-order mark (BOM), invalid UTF-8 byte sequences, or any trailing content after the top-level JSON value constitutes an immediate format error.
+- **Case Sensitivity**: Object keys are case-sensitive (`"centers"` and `"radii"` must be lowercase).
+- **Duplicate Keys**: Duplicate keys are strictly rejected even if their values are identical (e.g. duplicate `"radii"` keys).
+- **Shape & Type**: Top-level value must be an object. Missing keys, extra keys, non-list values, length not equal to 26, coordinate pairs with length not equal to 2, or non-string values (such as bare JSON floats `0.5`, integers, booleans, or null) constitute format errors.
 
 ### 5.2 Exact Number String Grammar
 Every number string in `"centers"` and `"radii"` represents an exact rational number $\frac{p}{q} \in \mathbb{Q}$.
 The string must strictly conform to either the **Decimal** or **Fraction** format without exception:
 
-1. **Decimal Grammar**:
-   - Matches regular expression: `^[+-]?(?:\d+\.\d+|\d+\.|\.\d+|\d+)$`
-   - Consists of an optional sign (`+` or `-`), followed by digits with at most one decimal point `.`.
+1. **ASCII Digits Only**:
+   A "digit" means the ASCII characters `0-9` only. Unicode digits (such as Arabic-Indic digits or fullwidth digits) are strictly forbidden and must be rejected.
+
+2. **Length Cap**:
+   Any number string longer than 100 characters (`len(s) > 100`) must be rejected.
+
+3. **Whole-String Match & Control Characters**:
+   The match must span the entire string. Trailing newlines or whitespace (e.g. `'1/2\n'`) are strictly invalid. Any ASCII control character (codepoints 0–31 and 127) anywhere in the string causes immediate rejection.
+
+4. **Decimal Grammar**:
+   - Matches regular expression: `^[+-]?(?:[0-9]+\.[0-9]+|[0-9]+\.|\.[0-9]+|[0-9]+)\Z`
+   - Consists of an optional sign (`+` or `-`), followed by ASCII digits with at most one decimal point `.`.
    - Examples of valid patterns:
      - Digits on both sides: `0.5`, `-0.125`, `+12.34567`
      - Leading dot: `.5`, `-.001`, `+.25`
@@ -99,21 +106,24 @@ The string must strictly conform to either the **Decimal** or **Fraction** forma
      - Pure integer digits: `0`, `1`, `-5`, `+42`, `007`
    - Leading zeros in the integer or fractional portion are allowed.
 
-2. **Fraction Grammar**:
-   - Matches regular expression: `^[+-]?\d+/[1-9]\d*$`
-   - Consists of an optional sign (`+` or `-`), followed by one or more numerator digits, followed by a literal slash `/`, followed by one or more denominator digits.
-   - The denominator MUST be strictly positive ($q \ge 1$); a denominator of zero is rejected (`/0` or `/00` is invalid).
+5. **Fraction Grammar**:
+   - Matches regular expression: `^[+-]?[0-9]+/[1-9][0-9]*\Z`
+   - Consists of an optional sign (`+` or `-`), followed by one or more numerator ASCII digits, followed by a literal slash `/`, followed by one or more denominator ASCII digits.
+   - **Denominator Rule**: The denominator is ASCII digits whose first digit is `1-9` (no leading zeros). A denominator of zero (`1/0`, `1/00`) or with leading zeros (`1/02`) is strictly rejected.
    - The denominator MUST NOT have a sign (no `/-2` or `/+2`).
 
-3. **Strictly Rejected Syntax**:
-   - **Whitespace**: Any whitespace (leading, trailing, or internal) is forbidden (e.g. `" 1/2"`, `"1/2 "`, `"1 / 2"`).
+6. **Strictly Rejected Syntax**:
+   - **Whitespace**: Any whitespace (leading, trailing, or internal) is forbidden (e.g. `" 1/2"`, `"1/2 "`, `"1 / 2"`, `"1/2\n"`).
+   - **Non-ASCII & Unicode Digits**: Any non-ASCII character (e.g. `"\u0661/\u0662"`, `"\uff11.\uff12"`).
+   - **Control Characters**: Any byte/codepoint $< 32$ or $= 127$.
    - **Scientific notation**: Exponential markers `e` or `E` are forbidden (e.g. `"1e-5"`, `"2.5E+3"`).
    - **Special symbols**: `NaN`, `Inf`, `Infinity` (case-insensitive) are forbidden.
    - **Multiple operators/delimiters**: Multiple dots or slashes are forbidden (e.g. `"1.2.3"`, `"1/2/3"`).
    - **Non-numeric characters**: Alphabetic or trailing garbage is forbidden (e.g. `"abc"`, `"1/2abc"`).
    - **Empty string**: `""` is forbidden.
+   - **Strings exceeding 100 characters**: Length $> 100$.
 
-#### Examples of Accepted Number Strings (14 examples)
+#### Examples of Accepted Number Strings
 | String | Parsed Rational Value | Notes |
 |---|---|---|
 | `"0"` | $0$ | Integer zero |
@@ -131,23 +141,29 @@ The string must strictly conform to either the **Decimal** or **Fraction** forma
 | `"12345/67890"` | $823/4526$ | Reducible large fraction |
 | `"0/1"` | $0$ | Fraction representing zero |
 
-#### Examples of Rejected Number Strings (14 examples)
+#### Examples of Rejected Number Strings
 | String | Rejection Reason |
 |---|---|
 | `""` | Empty string |
 | `"   "` | Whitespace only |
 | `" 1/2"` | Leading whitespace |
 | `"1/2 "` | Trailing whitespace |
+| `"1/2\n"` | Trailing newline (must be whole-string match) |
 | `"1 / 2"` | Internal whitespace |
+| `"\u0661/\u0662"` | Unicode digits (ASCII 0-9 only) |
+| `"\uff11.\uff12"` | Fullwidth Unicode digits |
 | `"1e-5"` | Scientific notation (`e`) |
 | `"2.5E+3"` | Scientific notation (`E`) |
 | `"nan"` / `"NaN"` | Not-a-Number special value |
 | `"inf"` / `"-infinity"` | Infinity special values |
 | `"1/0"` | Zero denominator |
+| `"1/00"` | Zero denominator with multiple digits |
+| `"1/02"` | Denominator has leading zero (first digit must be 1-9) |
 | `"1/-2"` | Signed / negative denominator |
 | `"1/2/3"` | Multiple slashes |
 | `"1.2.3"` | Multiple decimal points |
 | `"1/2abc"` / `"abc"` | Alphabetic / trailing junk |
+| `"0." + "1"*99` | Length exceeds 100 characters |
 
 ### 5.3 Geometric Validity Rules in Plain Math
 Given parsed exact rational centers $(x_i, y_i) \in \mathbb{Q}^2$ and radii $r_i \in \mathbb{Q}$ for $i \in \{0, \dots, 25\}$:
@@ -174,17 +190,37 @@ Given parsed exact rational centers $(x_i, y_i) \in \mathbb{Q}^2$ and radii $r_i
    computed in exact arithmetic as an irreducible fraction $p/q$ ($\gcd(p, q) = 1, q \ge 1$).
 
 ### 5.4 Checker Output Convention
-Any conforming verification tool or checker script must follow this stdout convention:
-- **On Success (Valid construction)**:
-  Print a single line starting with `VALID` followed by the exact score as an irreducible fraction $p/q$:
-  ```
-  VALID 38/15
-  ```
-- **On Failure (Invalid construction)**:
-  Print `INVALID` on the first line, followed by one line per detected constraint violation reporting the violation type, circle indices, and exact rational slack:
-  ```
-  INVALID
-  circle_overlap: indices=(0, 1), slack=-3/100
-  boundary_left_breach: indices=(5,), slack=-1/20
-  ```
+Any conforming verification tool or checker script must follow these exact stdout and exit code rules:
+- **(a) Score Format**: The score is ALWAYS printed as `p/q` in lowest terms, even for integers (e.g. `'3/1'`, not `'3'`).
+- **(b) Format Error Handling**: Any file format error prints `INVALID format_error: <short message>` on the first line and exits with code 1.
+- **(c) Exit Codes**: A valid construction exits with code 0; an invalid construction or format error exits with code 1.
+- **(d) Conformance Judgment**: Conformance is judged strictly on the **exit code** and the **FIRST output line**:
+  - Valid construction (exit code 0): Line 1 starts with `VALID` followed by the irreducible rational score:
+    ```
+    VALID 38/15
+    ```
+  - Invalid construction (exit code 1): Line 1 starts with `INVALID <violation_count> violations`:
+    ```
+    INVALID 2 violations
+    ```
+    or for format errors:
+    ```
+    INVALID format_error: <short message>
+    ```
+- **(e) Subsequent Violation Lines**: Later lines are informational but MUST use violation names from this closed list:
+  1. `non_positive_radius`
+  2. `boundary_left_breach`
+  3. `boundary_right_breach`
+  4. `boundary_bottom_breach`
+  5. `boundary_top_breach`
+  6. `circle_overlap`
+  7. `format_error`
+
+Example failure output for geometric violations:
+```
+INVALID 2 violations
+circle_overlap: indices=(0, 1), slack=-3/100
+boundary_left_breach: indices=(5,), slack=-1/20
+```
+
 

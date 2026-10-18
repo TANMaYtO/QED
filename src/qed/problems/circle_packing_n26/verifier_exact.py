@@ -8,25 +8,43 @@ import asyncio
 import json
 import math
 import re
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-DECIMAL_RE = re.compile(r"^[+-]?(?:\d+\.\d+|\d+\.|\.\d+|\d+)$")
-FRACTION_RE = re.compile(r"^[+-]?\d+/[1-9]\d*$")
+DECIMAL_RE = re.compile(r"^[+-]?(?:[0-9]+\.[0-9]+|[0-9]+\.|\.[0-9]+|[0-9]+)\Z")
+FRACTION_RE = re.compile(r"^[+-]?[0-9]+/[1-9][0-9]*\Z")
 
 
 def parse_exact_fraction(val: Any) -> Fraction:
     """Parse an exact fraction from a 'p/q' or decimal string.
 
-    Rejects floats, scientific notation, NaN, Inf, and strings with trailing junk.
+    Rejects floats, scientific notation, NaN, Inf, non-ASCII, control characters,
+    strings exceeding 100 characters, and strings with trailing junk.
     """
     if not isinstance(val, str):
         raise TypeError(
             f"Expected exact string ('p/q' or decimal), "
             f"got {type(val).__name__}: {val!r}"
+        )
+
+    if len(val) > 100:
+        raise ValueError(
+            "Number string exceeds maximum allowed length of 100 characters: "
+            f"{len(val)}"
+        )
+
+    if not val.isascii():
+        raise ValueError(
+            f"Non-ASCII characters are not allowed in exact numeric strings: {val!r}"
+        )
+
+    if any(ord(c) < 32 or ord(c) == 127 for c in val):
+        raise ValueError(
+            f"Control characters are not allowed in exact numeric strings: {val!r}"
         )
 
     clean: str = val.strip()
@@ -117,7 +135,7 @@ def verify_packing_exact(
     if len(centers) != 26 or len(radii) != 26:
         violations.append(
             ConstraintViolation(
-                violation_type="invalid_circle_count",
+                violation_type="format_error",
                 indices=(),
                 slack=Fraction(len(centers) - 26),
                 details=(
@@ -142,7 +160,7 @@ def verify_packing_exact(
         if len(c) != 2:
             violations.append(
                 ConstraintViolation(
-                    violation_type="invalid_coordinate_dimension",
+                    violation_type="format_error",
                     indices=(i,),
                     slack=Fraction(len(c) - 2),
                     details=f"Circle {i} center has dimension {len(c)}, expected 2",
@@ -403,6 +421,9 @@ def parse_construction_json(
     - 'radii' must be a list of 26 strings.
     - Every string must satisfy parse_exact_fraction grammar.
     """
+    if json_str.startswith("\ufeff"):
+        raise ValueError("UTF-8 byte-order mark (BOM) is not allowed")
+
     try:
         data = json.loads(json_str, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
@@ -484,7 +505,13 @@ def load_construction(
     file_path: Path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(f"Construction file not found: {file_path}")
-    content: str = file_path.read_text(encoding="utf-8")
+    raw_bytes: bytes = file_path.read_bytes()
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("UTF-8 byte-order mark (BOM) is not allowed")
+    try:
+        content: str = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Invalid UTF-8 encoding in construction file: {exc}") from exc
     return parse_construction_json(content)
 
 
@@ -495,7 +522,13 @@ async def load_construction_async(
     file_path: Path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(f"Construction file not found: {file_path}")
-    content: str = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+    raw_bytes: bytes = await asyncio.to_thread(file_path.read_bytes)
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("UTF-8 byte-order mark (BOM) is not allowed")
+    try:
+        content: str = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Invalid UTF-8 encoding in construction file: {exc}") from exc
     return parse_construction_json(content)
 
 
@@ -511,3 +544,47 @@ async def verify_construction_file_async(
     """Asynchronously load a construction JSON file and verify its exact validity."""
     centers, radii = await load_construction_async(path)
     return verify_packing_exact(centers, radii)
+
+
+def format_verification_output(result: VerificationResult) -> str:
+    """Format VerificationResult according to the specification output convention."""
+    if result.ok:
+        score_str: str = (
+            f"{result.exact_score.numerator}/{result.exact_score.denominator}"
+        )
+        return f"VALID {score_str}"
+
+    format_errors = [v for v in result.violations if v.violation_type == "format_error"]
+    if format_errors:
+        return f"INVALID format_error: {format_errors[0].details}"
+
+    count: int = len(result.violations)
+    noun: str = "violation" if count == 1 else "violations"
+    lines: list[str] = [f"INVALID {count} {noun}"]
+    for v in result.violations:
+        lines.append(f"{v.violation_type}: indices={v.indices}, slack={v.slack}")
+    return "\n".join(lines)
+
+
+def verify_file_cli(path: str | Path) -> int:
+    """Verify construction file from CLI, print result and return code."""
+    try:
+        result: VerificationResult = verify_construction_file(path)
+        print(format_verification_output(result))
+        return 0 if result.ok else 1
+    except (ValueError, TypeError, FileNotFoundError) as exc:
+        print(f"INVALID format_error: {exc}")
+        return 1
+
+
+def main() -> None:
+    """CLI entry point for exact verifier."""
+    if len(sys.argv) < 2:
+        print("INVALID format_error: No input file specified")
+        sys.exit(1)
+    code: int = verify_file_cli(sys.argv[1])
+    sys.exit(code)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
