@@ -220,7 +220,7 @@ async def run_problem(
     measured_calls: int = (
         tracker.llm_calls if tracker.llm_calls > 0 else actual_iterations
     )
-    measured_tokens: dict[str, int] | None = None
+    token_accounting: dict[str, str] | None = None
     if tracker.has_token_info:
         reasoning: int = max(
             0,
@@ -231,6 +231,12 @@ async def run_problem(
             "completion_tokens": tracker.completion_tokens,
             "reasoning_tokens": reasoning,
             "total_tokens": tracker.total_tokens,
+        }
+        token_accounting = {
+            "prompt_tokens": "measured",
+            "completion_tokens": "measured",
+            "total_tokens": "measured",
+            "reasoning_tokens": "derived",
         }
     elif evolution_result.metrics and "token_usage" in evolution_result.metrics:
         raw_usage = evolution_result.metrics["token_usage"]
@@ -243,11 +249,18 @@ async def run_problem(
             "reasoning_tokens": max(0, tt - (pt + ct)),
             "total_tokens": tt,
         }
+        token_accounting = {
+            "prompt_tokens": "measured",
+            "completion_tokens": "measured",
+            "total_tokens": "measured",
+            "reasoning_tokens": "derived",
+        }
 
-    # Guard: raise error if 3 consecutive API failures occurred
+    # Guard: abort if 3 consecutive API failures occurred
     if tracker.max_consecutive_failures >= 3:
-        logging.getLogger(__name__).warning(
-            f"Run had {tracker.max_consecutive_failures} consecutive API failures."
+        raise RuntimeError(
+            f"Run aborted: {tracker.max_consecutive_failures} "
+            "consecutive LLM API failures encountered."
         )
 
     summary: dict[str, Any] = {
@@ -259,6 +272,7 @@ async def run_problem(
         "wall_time": round(elapsed_wall_time, 4),
         "llm_calls": measured_calls,
         "token_counts": measured_tokens,
+        "token_accounting": token_accounting,
         "estimated_cost": None,
     }
 

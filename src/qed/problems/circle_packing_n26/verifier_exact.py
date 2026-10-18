@@ -4,11 +4,14 @@ Uses fractions.Fraction only. No floating-point operations anywhere in the
 checking path. Trust layer guarantee.
 """
 
+import asyncio
+import json
 import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path
 from typing import Any
 
 DECIMAL_RE = re.compile(r"^[+-]?(?:\d+\.\d+|\d+\.|\.\d+|\d+)$")
@@ -376,3 +379,135 @@ def make_valid(
         exact_loss=exact_loss,
         score_decimal=format_fraction_40_decimals(final_score),
     )
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Construct a dictionary from key-value pairs while rejecting duplicate keys."""
+    res: dict[str, Any] = {}
+    for key, val in pairs:
+        if key in res:
+            raise ValueError(f"Duplicate key in JSON construction object: {key!r}")
+        res[key] = val
+    return res
+
+
+def parse_construction_json(
+    json_str: str,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Parse and strictly validate a construction JSON string.
+
+    Enforces the specification grammar:
+    - Top-level object with exactly two keys: 'centers' and 'radii'.
+    - No duplicate or extra keys.
+    - 'centers' must be a list of 26 two-element string lists.
+    - 'radii' must be a list of 26 strings.
+    - Every string must satisfy parse_exact_fraction grammar.
+    """
+    try:
+        data = json.loads(json_str, object_pairs_hook=_reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON content: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Top-level JSON value must be an object, got {type(data).__name__}"
+        )
+
+    expected_keys = {"centers", "radii"}
+    actual_keys = set(data.keys())
+
+    missing = expected_keys - actual_keys
+    if missing:
+        raise ValueError(f"Missing required key(s) in construction: {sorted(missing)}")
+
+    extra = actual_keys - expected_keys
+    if extra:
+        raise ValueError(f"Unexpected extra key(s) in construction: {sorted(extra)}")
+
+    raw_centers = data["centers"]
+    if not isinstance(raw_centers, list) or len(raw_centers) != 26:
+        actual_centers_len = (
+            str(len(raw_centers))
+            if isinstance(raw_centers, list)
+            else type(raw_centers).__name__
+        )
+        raise ValueError(
+            "Key 'centers' must be a list of exactly 26 coordinate pairs, "
+            f"got {actual_centers_len}"
+        )
+
+    raw_radii = data["radii"]
+    if not isinstance(raw_radii, list) or len(raw_radii) != 26:
+        actual_radii_len = (
+            str(len(raw_radii))
+            if isinstance(raw_radii, list)
+            else type(raw_radii).__name__
+        )
+        raise ValueError(
+            f"Key 'radii' must be a list of exactly 26 strings, got {actual_radii_len}"
+        )
+
+    validated_centers: list[tuple[str, str]] = []
+    for i, pair in enumerate(raw_centers):
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError(
+                f"Circle {i} center must be a 2-element list [x, y], got {pair!r}"
+            )
+        x_str, y_str = pair[0], pair[1]
+        if not isinstance(x_str, str) or not isinstance(y_str, str):
+            raise TypeError(
+                f"Circle {i} center coordinates must be strings, "
+                f"got ({type(x_str).__name__}, {type(y_str).__name__})"
+            )
+        # Validate exact rational grammar
+        parse_exact_fraction(x_str)
+        parse_exact_fraction(y_str)
+        validated_centers.append((x_str, y_str))
+
+    validated_radii: list[str] = []
+    for i, r_val in enumerate(raw_radii):
+        if not isinstance(r_val, str):
+            raise TypeError(
+                f"Circle {i} radius must be a string, got {type(r_val).__name__}"
+            )
+        # Validate exact rational grammar
+        parse_exact_fraction(r_val)
+        validated_radii.append(r_val)
+
+    return validated_centers, validated_radii
+
+
+def load_construction(
+    path: str | Path,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Read and validate a 26-circle construction JSON file from disk."""
+    file_path: Path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Construction file not found: {file_path}")
+    content: str = file_path.read_text(encoding="utf-8")
+    return parse_construction_json(content)
+
+
+async def load_construction_async(
+    path: str | Path,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Asynchronously read and validate a 26-circle construction JSON file."""
+    file_path: Path = Path(path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Construction file not found: {file_path}")
+    content: str = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+    return parse_construction_json(content)
+
+
+def verify_construction_file(path: str | Path) -> VerificationResult:
+    """Load a construction JSON file and verify its exact geometric validity."""
+    centers, radii = load_construction(path)
+    return verify_packing_exact(centers, radii)
+
+
+async def verify_construction_file_async(
+    path: str | Path,
+) -> VerificationResult:
+    """Asynchronously load a construction JSON file and verify its exact validity."""
+    centers, radii = await load_construction_async(path)
+    return verify_packing_exact(centers, radii)

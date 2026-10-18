@@ -1,0 +1,31 @@
+{
+  "valid_5x5_plus_1.json": {
+    "verdict": "VALID",
+    "exact_score": "38/15",
+    "score_decimal": "2.5333333333333333333333333333333333333333",
+    "violations_count": 0
+  },
+  "invalid_overlap.json": {
+    "verdict": "INVALID",
+    "primary_violation": "circle_overlap"
+  },
+  "invalid_boundary_overshoot.json": {
+    "verdict": "INVALID",
+    "primary_violation": "boundary_left_breach"
+  },
+  "invalid_wrong_circle_count.json": {
+    "verdict": "INVALID",
+    "error_type": "format_error",
+    "details": "Key 'centers' must be a list of exactly 26 coordinate pairs, got 25"
+  },
+  "invalid_bad_number_string.json": {
+    "verdict": "INVALID",
+    "error_type": "grammar_error",
+    "details": "Scientific notation, NaN, and Inf are not allowed in exact verification: '1e-5'"
+  },
+  "invalid_extra_key.json": {
+    "verdict": "INVALID",
+    "error_type": "format_error",
+    "details": "Unexpected extra key(s) in construction: ['notes']"
+  }
+}

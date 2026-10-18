@@ -65,6 +65,12 @@ async def test_run_problem_with_mocked_evolution(
         "reasoning_tokens": 0,
         "total_tokens": 200,
     }
+    assert summary["token_accounting"] == {
+        "prompt_tokens": "measured",
+        "completion_tokens": "measured",
+        "total_tokens": "measured",
+        "reasoning_tokens": "derived",
+    }
     assert summary["estimated_cost"] is None
 
     summary_file: Path = tmp_path / "runs" / "test_run_001" / "summary.json"
@@ -73,6 +79,53 @@ async def test_run_problem_with_mocked_evolution(
     loaded_summary = json.loads(summary_file.read_text(encoding="utf-8"))
     assert loaded_summary["problem_id"] == "circle_packing_n26"
     assert loaded_summary["config_hash"] == summary["config_hash"]
+    assert loaded_summary["token_accounting"] == summary["token_accounting"]
     # Check that secrets are not included in summary.json
     assert "api_key" not in loaded_summary
     assert "GEMINI_API_KEY" not in loaded_summary
+
+
+@pytest.mark.asyncio
+async def test_consecutive_failures_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify run_problem aborts when 3 consecutive LLM failures occur."""
+    import logging
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-mock-key")
+
+    async def mock_evolution_with_failures(
+        *args: Any, **kwargs: Any
+    ) -> EvolutionResult:
+        logger = logging.getLogger("openevolve")
+        # Emit 3 consecutive API failures
+        logger.warning("LLM generation failed: 429 RateLimitError attempt 1")
+        logger.warning("LLM generation failed: 429 RateLimitError attempt 2")
+        logger.warning("LLM generation failed: 429 RateLimitError attempt 3")
+        fake_prog = MagicMock()
+        fake_prog.metrics = {"sum_radii": 0.5}
+        return EvolutionResult(
+            best_program=fake_prog,
+            best_score=0.5,
+            best_code="",
+            metrics={},
+            output_dir=str(tmp_path / "out"),
+        )
+
+    mock_resolve = AsyncMock(return_value="gemini-2.5-flash")
+    with (
+        patch(
+            "qed.engine.run._run_evolution_async",
+            side_effect=mock_evolution_with_failures,
+        ),
+        patch("qed.engine.run.resolve_flash_model", new=mock_resolve),
+    ):
+        with pytest.raises(
+            RuntimeError, match="Run aborted: 3 consecutive LLM API failures"
+        ):
+            await run_problem(
+                problem_id="circle_packing_n26",
+                iterations=5,
+                run_id="test_abort_run",
+                output_root=tmp_path / "runs",
+            )

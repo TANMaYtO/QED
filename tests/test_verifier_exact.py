@@ -5,7 +5,9 @@ infinitesimal nudges (10^-18), property-based testing with Hypothesis,
 and make_valid shrinker.
 """
 
+import json
 from fractions import Fraction
+from pathlib import Path
 
 import hypothesis.strategies as st
 import pytest
@@ -14,8 +16,13 @@ from hypothesis import given, settings
 from qed.problems.circle_packing_n26.verifier_exact import (
     format_fraction_40_decimals,
     isqrt_lower_bound,
+    load_construction,
+    load_construction_async,
     make_valid,
+    parse_construction_json,
     parse_exact_fraction,
+    verify_construction_file,
+    verify_construction_file_async,
     verify_packing_exact,
 )
 
@@ -344,10 +351,213 @@ def test_hypothesis_make_valid_always_exact_valid(
 
 @settings(max_examples=50)
 @given(
-    st.integers(min_value=1, max_value=10000), st.integers(min_value=1, max_value=10000)
+    st.integers(min_value=1, max_value=10000),
+    st.integers(min_value=1, max_value=10000),
 )
 def test_hypothesis_isqrt_guarantee(p: int, q: int) -> None:
     """Hypothesis test: isqrt_lower_bound squared is always <= ratio."""
     ratio = Fraction(p, q)
     bound = isqrt_lower_bound(ratio)
     assert bound * bound <= ratio
+
+
+def test_load_construction_valid_fixture() -> None:
+    """Test loading and verifying valid_5x5_plus_1.json fixture."""
+    fixture_path = Path(__file__).parent / "fixtures" / "valid_5x5_plus_1.json"
+    centers, radii = load_construction(fixture_path)
+    assert len(centers) == 26
+    assert len(radii) == 26
+    assert centers[0] == ("1/10", "1/10")
+    assert radii[0] == "1/10"
+    assert radii[25] == "1/30"
+
+    res = verify_construction_file(fixture_path)
+    assert res.ok is True
+    assert res.exact_score == Fraction(38, 15)
+    assert res.score_decimal == "2.5333333333333333333333333333333333333333"
+    assert len(res.violations) == 0
+
+
+@pytest.mark.asyncio
+async def test_load_construction_async_valid() -> None:
+    """Test async loader and file verifier on valid fixture."""
+    fixture_path = Path(__file__).parent / "fixtures" / "valid_5x5_plus_1.json"
+    centers, radii = await load_construction_async(fixture_path)
+    assert len(centers) == 26
+    assert len(radii) == 26
+
+    res = await verify_construction_file_async(fixture_path)
+    assert res.ok is True
+    assert res.exact_score == Fraction(38, 15)
+
+
+def test_load_construction_rejects_duplicate_keys() -> None:
+    """Test JSON loader strictly rejects duplicate keys in objects."""
+    dup_json = '{"centers": [], "centers": []}'
+    with pytest.raises(ValueError, match="Duplicate key in JSON"):
+        parse_construction_json(dup_json)
+
+
+def test_load_construction_rejects_extra_keys() -> None:
+    """Test JSON loader strictly rejects unexpected extra keys."""
+    fixture_path = Path(__file__).parent / "fixtures" / "invalid_extra_key.json"
+    with pytest.raises(ValueError, match="Unexpected extra key"):
+        load_construction(fixture_path)
+
+
+def test_load_construction_rejects_missing_keys() -> None:
+    """Test JSON loader strictly rejects missing keys."""
+    missing_radii = json.dumps({"centers": [["0.5", "0.5"]] * 26})
+    with pytest.raises(ValueError, match="Missing required key"):
+        parse_construction_json(missing_radii)
+
+    missing_centers = json.dumps({"radii": ["0.1"] * 26})
+    with pytest.raises(ValueError, match="Missing required key"):
+        parse_construction_json(missing_centers)
+
+
+def test_load_construction_rejects_non_object_root() -> None:
+    """Test JSON loader rejects top-level JSON that is not an object."""
+    with pytest.raises(ValueError, match="Top-level JSON value must be an object"):
+        parse_construction_json("[]")
+
+    with pytest.raises(ValueError, match="Top-level JSON value must be an object"):
+        parse_construction_json('"string"')
+
+
+def test_load_construction_rejects_wrong_circle_count() -> None:
+    """Test JSON loader rejects circle counts other than 26."""
+    fixture_path = (
+        Path(__file__).parent / "fixtures" / "invalid_wrong_circle_count.json"
+    )
+    with pytest.raises(ValueError, match="must be a list of exactly 26"):
+        load_construction(fixture_path)
+
+    # 27 radii
+    wrong_radii = json.dumps({"centers": [["0.5", "0.5"]] * 26, "radii": ["0.1"] * 27})
+    with pytest.raises(ValueError, match="must be a list of exactly 26"):
+        parse_construction_json(wrong_radii)
+
+
+def test_load_construction_rejects_wrong_coordinate_shape() -> None:
+    """Test JSON loader rejects center coordinates that are not 2-element lists."""
+    bad_coord = json.dumps(
+        {
+            "centers": [["0.5", "0.5", "0.5"]] + [["0.5", "0.5"]] * 25,
+            "radii": ["0.1"] * 26,
+        }
+    )
+    with pytest.raises(ValueError, match="must be a 2-element list"):
+        parse_construction_json(bad_coord)
+
+
+def test_load_construction_rejects_non_string_elements() -> None:
+    """Test JSON loader strictly rejects non-string types in coordinates and radii."""
+    float_coord = json.dumps(
+        {"centers": [[0.5, 0.5]] + [["0.5", "0.5"]] * 25, "radii": ["0.1"] * 26}
+    )
+    with pytest.raises(TypeError, match="center coordinates must be strings"):
+        parse_construction_json(float_coord)
+
+    float_radius = json.dumps(
+        {"centers": [["0.5", "0.5"]] * 26, "radii": [0.1] + ["0.1"] * 25}
+    )
+    with pytest.raises(TypeError, match="radius must be a string"):
+        parse_construction_json(float_radius)
+
+
+def test_load_construction_rejects_grammar_violations() -> None:
+    """Test JSON loader rejects number strings violating grammar."""
+    fixture_path = Path(__file__).parent / "fixtures" / "invalid_bad_number_string.json"
+    with pytest.raises(ValueError, match="Scientific notation"):
+        load_construction(fixture_path)
+
+
+def test_load_construction_accepts_spec_grammar_examples() -> None:
+    """Test that all 14 accepted spec examples pass parse_exact_fraction."""
+    accepted = [
+        ("0", Fraction(0)),
+        ("1", Fraction(1)),
+        ("-5", Fraction(-5)),
+        ("+7", Fraction(7)),
+        ("0.5", Fraction(1, 2)),
+        (".5", Fraction(1, 2)),
+        ("5.", Fraction(5)),
+        ("-0.125", Fraction(-1, 8)),
+        ("+007.25", Fraction(29, 4)),
+        ("1/2", Fraction(1, 2)),
+        ("-3/4", Fraction(-3, 4)),
+        ("+26/1", Fraction(26)),
+        ("12345/67890", Fraction(12345, 67890)),
+        ("0/1", Fraction(0)),
+    ]
+    for raw, expected in accepted:
+        assert parse_exact_fraction(raw) == expected
+
+
+def test_load_construction_rejects_spec_grammar_examples() -> None:
+    """Test that all 14 rejected spec examples fail parse_exact_fraction."""
+    rejected = [
+        "",
+        "   ",
+        " 1/2",
+        "1/2 ",
+        "1 / 2",
+        "1e-5",
+        "2.5E+3",
+        "nan",
+        "inf",
+        "1/0",
+        "1/-2",
+        "1/2/3",
+        "1.2.3",
+        "1/2abc",
+    ]
+    for raw in rejected:
+        with pytest.raises(ValueError):
+            parse_exact_fraction(raw)
+
+
+@pytest.mark.asyncio
+async def test_load_construction_file_errors(tmp_path: Path) -> None:
+    """Test FileNotFoundError on missing file and ValueError on malformed JSON."""
+    with pytest.raises(FileNotFoundError, match="Construction file not found"):
+        load_construction(tmp_path / "nonexistent.json")
+
+    with pytest.raises(FileNotFoundError, match="Construction file not found"):
+        await load_construction_async(tmp_path / "nonexistent.json")
+
+    bad_json_file = tmp_path / "broken.json"
+    bad_json_file.write_text("{broken json", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid JSON content"):
+        load_construction(bad_json_file)
+
+
+def test_fixtures_against_expected_json() -> None:
+    """Verify all 6 test fixtures against expected.json verdicts."""
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    expected_file = fixtures_dir / "expected.json"
+    expected_data = json.loads(expected_file.read_text(encoding="utf-8"))
+
+    for filename, expected_verdict in expected_data.items():
+        file_path = fixtures_dir / filename
+        assert file_path.is_file(), f"Missing fixture file: {filename}"
+
+        if expected_verdict["verdict"] == "VALID":
+            res = verify_construction_file(file_path)
+            assert res.ok is True
+            assert res.score_decimal == expected_verdict["score_decimal"]
+            assert len(res.violations) == expected_verdict["violations_count"]
+        else:
+            # An invalid fixture either fails file loading (format/grammar)
+            # or passes loading and fails geometric verification
+            if "primary_violation" in expected_verdict:
+                res = verify_construction_file(file_path)
+                assert res.ok is False
+                assert any(
+                    v.violation_type == expected_verdict["primary_violation"]
+                    for v in res.violations
+                )
+            else:
+                with pytest.raises((ValueError, TypeError)):
+                    load_construction(file_path)
