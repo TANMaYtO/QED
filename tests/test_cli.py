@@ -27,3 +27,25 @@ def test_cli_no_args_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "usage: qed" in captured.out
+
+
+def test_cli_run_subcommand(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that running qed run invokes run_problem and prints result."""
+    from unittest.mock import AsyncMock, patch
+
+    mock_summary = {
+        "problem_id": "circle_packing_n26",
+        "run_id": "cli_run_123",
+        "best_fast_score": 0.9597,
+        "wall_time": 1.25,
+    }
+
+    with patch("qed.cli.run_problem", new=AsyncMock(return_value=mock_summary)):
+        exit_code = main(["run", "circle_packing_n26", "-i", "10"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Run cli_run_123 finished" in captured.out
+    assert "0.9597" in captured.out
