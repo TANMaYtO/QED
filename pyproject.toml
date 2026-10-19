@@ -56,3 +56,6 @@ select = ["E", "F", "I", "W", "UP"]
 testpaths = ["tests"]
 addopts = "-ra -q"
 asyncio_mode = "auto"
+markers = [
+    "docker: tests requiring a running Docker daemon",
+]
