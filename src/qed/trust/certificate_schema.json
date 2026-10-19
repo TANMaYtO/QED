@@ -11,6 +11,7 @@
     "construction",
     "claimed_score",
     "best_known",
+    "best_known_tolerance",
     "run",
     "verifiers",
     "created_at",
@@ -86,6 +87,10 @@
         }
       }
     },
+    "best_known_tolerance": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+/[1-9][0-9]*$"
+    },
     "run": {
       "type": ["object", "null"],
       "required": [
@@ -145,5 +150,64 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "claim_type": {
+            "const": "demonstration"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "best_known": {
+            "type": "null"
+          },
+          "best_known_tolerance": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim_type": {
+            "const": "reproduction"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "best_known": {
+            "type": "object"
+          },
+          "best_known_tolerance": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim_type": {
+            "const": "record"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "best_known": {
+            "type": "object"
+          },
+          "best_known_tolerance": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }

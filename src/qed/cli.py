@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 3. make-cert
     make_cert_parser = subparsers.add_parser(
-        "make-cert", help="Create a verified certificate from a run's best program"
+        "make-cert", help="Create a verified certificate from a run or construction"
     )
     make_cert_parser.add_argument(
         "--run",
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--construction",
         type=str,
         default=None,
-        help="Path to hand-built construction JSON file for demonstration claims",
+        help="Path to raw construction JSON file containing centers and radii",
     )
     make_cert_parser.add_argument(
         "--claim-type",
@@ -90,26 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Classification of the claim",
     )
     make_cert_parser.add_argument(
-        "--best-known",
-        "--best-known-value",
-        dest="best_known_value",
+        "--baseline",
         type=str,
         default=None,
-        help="Exact string of best known value (e.g. '2.635' or '38/15')",
+        help="Literature baseline ID from baselines.json (required for repro/record)",
     )
     make_cert_parser.add_argument(
-        "--source-url",
-        "--best-known-url",
-        dest="best_known_url",
+        "--tolerance",
         type=str,
-        default=None,
-        help="Literature or baseline source URL for best known value",
-    )
-    make_cert_parser.add_argument(
-        "--best-known-date",
-        type=str,
-        default=None,
-        help="Retrieval date for best known value (YYYY-MM-DD)",
+        default="0/1",
+        help="Exact fraction tolerance for reproduction (default '0/1')",
     )
     make_cert_parser.add_argument(
         "--out",
@@ -162,7 +152,6 @@ def handle_verify_command(args: argparse.Namespace) -> int:
 def handle_make_cert_command(args: argparse.Namespace) -> int:
     """Handle execution of the make-cert subcommand."""
     try:
-        # Check if run_id is a path on disk or an ID
         run_dir: Path | None = None
         run_id: str | None = getattr(args, "run_id", None)
         if run_id and Path(run_id).exists():
@@ -175,9 +164,8 @@ def handle_make_cert_command(args: argparse.Namespace) -> int:
             construction_path=getattr(args, "construction", None),
             claim_type=args.claim_type,
             out_path=args.out,
-            best_known_value=getattr(args, "best_known_value", None),
-            best_known_url=getattr(args, "best_known_url", None),
-            best_known_date=getattr(args, "best_known_date", None),
+            baseline_id=getattr(args, "baseline", None),
+            tolerance=getattr(args, "tolerance", "0/1"),
         )
         score = cert_data["claimed_score"]
         print(f"Certificate issued to {args.out} with exact score {score}")

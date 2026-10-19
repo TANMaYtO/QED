@@ -147,5 +147,6 @@
     "independent_sha256": "891b473ab2eeb7d5fc866b4cca35b20ea3bbd44846feca0c718bed75e79d3412"
   },
   "created_at": "2026-10-18T20:00:00Z",
-  "certificate_sha256": "2dff00ad2cd611b5237ab906e64c82faa0152a8ddf315fcb8aa0e3133223200d"
+  "certificate_sha256": "948e1e7f95d9fd306c96259946b2cc29ab6693bc651f6f2e6f9c8b4aee394d81",
+  "best_known_tolerance": null
 }

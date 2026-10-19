@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProblemBaselinesRegistry",
+  "description": "Schema for problem baselines registry containing human-verified literature baselines.",
+  "type": "object",
+  "required": ["entries"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "value",
+          "source_url",
+          "retrieved_date",
+          "quote",
+          "human_verified",
+          "verified_on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]+$"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "source_url": {
+            "type": "string"
+          },
+          "retrieved_date": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "human_verified": {
+            "type": "boolean"
+          },
+          "verified_on": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

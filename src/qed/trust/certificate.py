@@ -1,10 +1,10 @@
 """Certificate generation, schema validation, and cryptographic verification engine.
 
 Provides full trust-layer validation for QED mathematical discovery claims:
-- JSON schema validation
+- JSON schema validation via jsonschema Draft 2020-12
 - Cryptographic hash chaining (spec, verifiers, canonical certificate)
 - Cross-checker dual verification (verifier_exact and independent subprocess)
-- Exact rational arithmetic claim gating policies
+- Exact rational arithmetic claim gating policies and literature baselines
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+
+import jsonschema
 
 from qed.problems.circle_packing_n26.verifier_exact import (
     format_fraction_40_decimals,
@@ -79,246 +81,100 @@ def load_certificate_schema() -> dict[str, Any]:
     return json.loads(SCHEMA_FILE_PATH.read_text(encoding="utf-8"))
 
 
+def _error_path_key(err: jsonschema.ValidationError) -> list[Any]:
+    """Sort key extracting path representation from a ValidationError."""
+    return list(err.path)
+
+
 def validate_certificate_schema(
     cert: Any, schema: dict[str, Any] | None = None
 ) -> list[str]:
-    """Validate a certificate dictionary against the formal schema specification.
+    """Validate a certificate dictionary against the formal Draft 2020-12 schema.
 
-    Performs full structural validation using stdlib and falls back to / leverages
-    jsonschema if available in the execution environment.
+    Draft202012Validator is the single source of truth for structural schema
+    validation, augmented with exact arithmetic checks for lowest terms and
+    tolerance bounds that JSON Schema cannot express.
     """
     errors: list[str] = []
-    if not isinstance(cert, dict):
-        return [f"Certificate root must be a JSON object, got {type(cert).__name__}"]
+    schema_dict = schema or load_certificate_schema()
+    validator = jsonschema.Draft202012Validator(schema_dict)
 
-    expected_keys = {
-        "schema_version",
-        "problem_id",
-        "problem_spec_sha256",
-        "claim_type",
-        "construction",
-        "claimed_score",
-        "best_known",
-        "run",
-        "verifiers",
-        "created_at",
-        "certificate_sha256",
-    }
-    actual_keys = set(cert.keys())
+    sorted_errs = sorted(validator.iter_errors(cert), key=_error_path_key)
+    for err in sorted_errs:
+        loc = "/".join(map(str, err.path))
+        prefix = f"at '{loc}': " if loc else ""
+        errors.append(f"{prefix}{err.message}")
 
-    missing = expected_keys - actual_keys
-    if missing:
-        errors.append(f"Missing required property: {sorted(missing)}")
-
-    extra = actual_keys - expected_keys
-    if extra:
-        errors.append(f"Unexpected extra property: {sorted(extra)}")
-
-    # 1. schema_version
-    ver = cert.get("schema_version")
-    if not isinstance(ver, str) or not VERSION_PATTERN.match(ver):
-        errors.append(f"Invalid schema_version: expected semver string, got {ver!r}")
-
-    # 2. problem_id
-    pid = cert.get("problem_id")
-    if not isinstance(pid, str) or not pid:
-        errors.append(f"Invalid problem_id: expected non-empty string, got {pid!r}")
-
-    # 3. problem_spec_sha256
-    spec_sha = cert.get("problem_spec_sha256")
-    if not isinstance(spec_sha, str) or not HEX_64_PATTERN.match(spec_sha):
-        errors.append(
-            f"Invalid problem_spec_sha256: expected 64-char hex, got {spec_sha!r}"
-        )
-
-    # 4. claim_type
-    ctype = cert.get("claim_type")
-    if ctype not in {"demonstration", "reproduction", "record"}:
-        errors.append(
-            f"Invalid claim_type: must be demonstration, reproduction, or record, "
-            f"got {ctype!r}"
-        )
-
-    # 5. construction
-    c_obj = cert.get("construction")
-    if not isinstance(c_obj, dict):
-        errors.append(
-            f"Invalid construction: expected object, got {type(c_obj).__name__}"
-        )
-    else:
-        c_keys = set(c_obj.keys())
-        if c_keys != {"centers", "radii"}:
-            errors.append(
-                f"Construction object must contain exactly 'centers' and 'radii', "
-                f"got {sorted(c_keys)}"
-            )
-        else:
-            centers = c_obj.get("centers")
-            radii = c_obj.get("radii")
-            if not isinstance(centers, list) or len(centers) != 26:
-                clen = (
-                    len(centers)
-                    if isinstance(centers, list)
-                    else type(centers).__name__
-                )
+    # Custom semantic checks for exact fraction properties
+    if isinstance(cert, dict):
+        c_score = cert.get("claimed_score")
+        if isinstance(c_score, str) and FRACTION_PATTERN.match(c_score):
+            p, q = map(int, c_score.split("/"))
+            f = Fraction(p, q)
+            if f.numerator != p or f.denominator != q:
                 errors.append(
-                    f"Construction centers must be a list of 26 items, got {clen}"
+                    f"claimed_score {c_score!r} is not in lowest terms "
+                    f"(reduced: {f.numerator}/{f.denominator})"
                 )
-            else:
-                for idx, c in enumerate(centers):
-                    if (
-                        not isinstance(c, list)
-                        or len(c) != 2
-                        or not isinstance(c[0], str)
-                        or not isinstance(c[1], str)
-                    ):
-                        errors.append(
-                            f"Center {idx} must be a 2-element list of strings"
-                        )
-                    elif len(c[0]) > 100 or len(c[1]) > 100:
-                        errors.append(
-                            f"Center {idx} coordinate exceeds length cap of 100"
-                        )
 
-            if not isinstance(radii, list) or len(radii) != 26:
-                rlen = len(radii) if isinstance(radii, list) else type(radii).__name__
+        tol = cert.get("best_known_tolerance")
+        if isinstance(tol, str) and FRACTION_PATTERN.match(tol):
+            p, q = map(int, tol.split("/"))
+            f = Fraction(p, q)
+            if f.numerator != p or f.denominator != q:
                 errors.append(
-                    f"Construction radii must be a list of 26 items, got {rlen}"
+                    f"best_known_tolerance {tol!r} is not in lowest terms "
+                    f"(reduced: {f.numerator}/{f.denominator})"
                 )
-            else:
-                for idx, r in enumerate(radii):
-                    if not isinstance(r, str):
-                        errors.append(
-                            f"Radius {idx} must be a string, got {type(r).__name__}"
-                        )
-                    elif len(r) > 100:
-                        errors.append(f"Radius {idx} string exceeds length cap of 100")
-
-    # 6. claimed_score
-    c_score = cert.get("claimed_score")
-    if not isinstance(c_score, str) or not FRACTION_PATTERN.match(c_score):
-        errors.append(
-            f"Invalid claimed_score: expected irreducible 'p/q' string, got {c_score!r}"
-        )
-    else:
-        # Check lowest terms
-        p, q = map(int, c_score.split("/"))
-        f = Fraction(p, q)
-        if f.numerator != p or f.denominator != q:
-            errors.append(
-                f"claimed_score {c_score!r} is not in lowest terms (reduced: "
-                f"{f.numerator}/{f.denominator})"
-            )
-
-    # 7. best_known
-    bk = cert.get("best_known")
-    if bk is not None:
-        if not isinstance(bk, dict):
-            errors.append(
-                f"best_known must be an object or null, got {type(bk).__name__}"
-            )
-        else:
-            bk_keys = set(bk.keys())
-            if bk_keys != {"value", "source_url", "retrieved_date"}:
-                errors.append(
-                    f"best_known must contain exactly 'value', 'source_url', and "
-                    f"'retrieved_date', got {sorted(bk_keys)}"
-                )
-            if not isinstance(bk.get("value"), str):
-                errors.append("best_known.value must be a string")
-            elif len(bk["value"]) > 100:
-                errors.append("best_known.value exceeds 100 characters")
-            if not isinstance(bk.get("source_url"), str):
-                errors.append("best_known.source_url must be a string")
-            if not isinstance(bk.get("retrieved_date"), str) or not DATE_PATTERN.match(
-                bk["retrieved_date"]
-            ):
-                errors.append(
-                    "best_known.retrieved_date must be an ISO 8601 date (YYYY-MM-DD)"
-                )
-
-    # 8. run
-    run_obj = cert.get("run")
-    if run_obj is not None:
-        if not isinstance(run_obj, dict):
-            errors.append(
-                f"run must be an object or null, got {type(run_obj).__name__}"
-            )
-        else:
-            run_keys = set(run_obj.keys())
-            req_run_keys = {
-                "run_id",
-                "engine",
-                "engine_version",
-                "model",
-                "iterations",
-                "best_fast_score",
-                "shrink_loss_exact",
-            }
-            if run_keys != req_run_keys:
-                errors.append(
-                    f"run must contain {sorted(req_run_keys)}, got {sorted(run_keys)}"
-                )
-            if (
-                not isinstance(run_obj.get("iterations"), int)
-                or run_obj["iterations"] < 0
-            ):
-                errors.append("run.iterations must be a non-negative integer")
-            for field_name in [
-                "run_id",
-                "engine",
-                "engine_version",
-                "model",
-                "best_fast_score",
-                "shrink_loss_exact",
-            ]:
-                if not isinstance(run_obj.get(field_name), str):
-                    errors.append(f"run.{field_name} must be a string")
-
-    # 9. verifiers
-    vers = cert.get("verifiers")
-    if not isinstance(vers, dict):
-        errors.append(f"verifiers must be an object, got {type(vers).__name__}")
-    else:
-        v_keys = set(vers.keys())
-        if v_keys != {"exact_sha256", "independent_sha256"}:
-            errors.append(
-                f"verifiers must contain exact_sha256 and independent_sha256, "
-                f"got {sorted(v_keys)}"
-            )
-        if not isinstance(vers.get("exact_sha256"), str) or not HEX_64_PATTERN.match(
-            vers.get("exact_sha256", "")
-        ):
-            errors.append("verifiers.exact_sha256 must be a 64-char hex string")
-        if not isinstance(
-            vers.get("independent_sha256"), str
-        ) or not HEX_64_PATTERN.match(vers.get("independent_sha256", "")):
-            errors.append("verifiers.independent_sha256 must be a 64-char hex string")
-
-    # 10. created_at
-    cat = cert.get("created_at")
-    if not isinstance(cat, str) or not cat:
-        errors.append(f"created_at must be an ISO 8601 string, got {cat!r}")
-
-    # 11. certificate_sha256
-    c_sha = cert.get("certificate_sha256")
-    if not isinstance(c_sha, str) or not HEX_64_PATTERN.match(c_sha):
-        errors.append(f"certificate_sha256 must be a 64-char hex string, got {c_sha!r}")
-
-    # Also validate against jsonschema package if installed
-    try:
-        import jsonschema  # type: ignore[import-not-found]
-
-        schema_dict = schema or load_certificate_schema()
-        validator = jsonschema.Draft202012Validator(schema_dict)
-        for err in validator.iter_errors(cert):
-            msg = f"JSONSchema error at {'/'.join(map(str, err.path))}: {err.message}"
-            if msg not in errors:
-                errors.append(msg)
-    except ImportError:
-        pass
+            elif f < 0 or f > Fraction(1, 1000):
+                errors.append(f"best_known_tolerance {tol!r} must be in [0, 1/1000]")
 
     return errors
+
+
+def format_fraction_decimals(val: Fraction, decimals: int = 10) -> str:
+    """Format an exact fraction to a fixed number of decimal digits via integer math."""
+    if val < 0:
+        sign = "-"
+        val = -val
+    else:
+        sign = ""
+    int_part = val.numerator // val.denominator
+    rem = val.numerator % val.denominator
+    frac_part = (rem * (10**decimals)) // val.denominator
+    return f"{sign}{int_part}.{frac_part:0{decimals}d}"
+
+
+async def async_load_problem_baselines(
+    problem_dir: Path | str,
+) -> list[dict[str, Any]]:
+    """Asynchronously load and validate literature baselines for a problem."""
+    p_dir = Path(problem_dir)
+    baselines_path = p_dir / "baselines.json"
+    if not baselines_path.exists():
+        return []
+
+    raw = await async_read_file_bytes(baselines_path)
+    data: dict[str, Any] = json.loads(raw.decode("utf-8"))
+
+    schema_path = p_dir / "baselines_schema.json"
+    if schema_path.exists():
+        schema_raw = await async_read_file_bytes(schema_path)
+        schema_dict = json.loads(schema_raw.decode("utf-8"))
+        validator = jsonschema.Draft202012Validator(schema_dict)
+        errs = list(validator.iter_errors(data))
+        if errs:
+            raise ValueError(f"baselines.json schema error: {errs[0].message}")
+
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError("baselines.json 'entries' must be a list")
+    return entries
+
+
+def load_problem_baselines(problem_dir: Path | str) -> list[dict[str, Any]]:
+    """Synchronously load and validate literature baselines for a problem."""
+    return asyncio.run(async_load_problem_baselines(problem_dir))
 
 
 async def async_run_independent_subprocess(
@@ -349,14 +205,14 @@ async def async_verify_certificate(
     """Verify a QED certificate through all formal checks in sequence.
 
     Checks:
-    (a) Validate against certificate JSON schema.
+    (a) Validate against certificate JSON schema (Draft 2020-12).
     (b) Recompute canonical certificate_sha256 and require equality.
     (c) Recompute SHA-256 of current spec.md and require match.
     (d) Recompute both verifier file hashes and require match.
     (e) Write construction to a temp file and execute exact verifier in-process
         and independent verifier as a SEPARATE subprocess.
     (f) Require both output VALID with identical exact score equal to claimed_score.
-    (g) Enforce claim_type gating rules.
+    (g) Enforce claim_type gating rules (tolerance for reproduction, margin for record).
 
     Returns:
         (passed, check_lines, score_p_q, score_decimal)
@@ -523,7 +379,7 @@ async def async_verify_certificate(
             return False, check_lines, None, None
         check_lines.append("Score parity: OK")
 
-        # (g) Enforce claim_type
+        # (g) Enforce claim_type gating rules
         claim_type = cert["claim_type"]
         best_known = cert.get("best_known")
 
@@ -533,23 +389,70 @@ async def async_verify_certificate(
                     "Claim type gating: FAILED: Demonstration requires best_known null"
                 )
                 return False, check_lines, None, None
+            if cert.get("best_known_tolerance") is not None:
+                check_lines.append(
+                    "Claim type gating: FAILED: Demonstration requires "
+                    "best_known_tolerance null"
+                )
+                return False, check_lines, None, None
             check_lines.append("Claim type gating: OK (demonstration)")
+
         elif claim_type == "reproduction":
             if best_known is None:
                 check_lines.append(
                     "Claim type gating: FAILED: Reproduction requires best_known"
                 )
                 return False, check_lines, None, None
-            check_lines.append("Claim type gating: OK (reproduction)")
+            if cert.get("best_known_tolerance") is None:
+                check_lines.append(
+                    "Claim type gating: FAILED: Reproduction requires "
+                    "best_known_tolerance"
+                )
+                return False, check_lines, None, None
+
+            try:
+                claimed_frac = Fraction(claimed_score)
+                bk_frac = parse_exact_fraction(best_known["value"])
+                tol_frac = Fraction(cert["best_known_tolerance"])
+            except Exception as exc:
+                check_lines.append(
+                    f"Claim type gating: FAILED: Invalid best_known/tolerance: {exc}"
+                )
+                return False, check_lines, None, None
+
+            threshold = bk_frac * (Fraction(1, 1) - tol_frac)
+            if claimed_frac < threshold:
+                check_lines.append(
+                    f"Claim type gating: FAILED: Reproduction score {claimed_frac} < "
+                    f"threshold {threshold} (best_known {bk_frac} with tolerance "
+                    f"{tol_frac})"
+                )
+                return False, check_lines, None, None
+
+            ratio = claimed_frac / bk_frac
+            ratio_str = format_fraction_decimals(ratio, 10)
+            check_lines.append(
+                f"Claim type gating: OK (reproduction: claimed/best_known ratio "
+                f"{ratio_str})"
+            )
+
         elif claim_type == "record":
             if best_known is None:
                 check_lines.append(
                     "Claim type gating: FAILED: Record claim requires best_known object"
                 )
                 return False, check_lines, None, None
+            if cert.get("best_known_tolerance") is not None:
+                check_lines.append(
+                    "Claim type gating: FAILED: Record claim requires "
+                    "best_known_tolerance null"
+                )
+                return False, check_lines, None, None
+
             try:
                 claimed_frac = Fraction(claimed_score)
-                bk_frac = parse_exact_fraction(best_known["value"])
+                bk_str = str(best_known["value"]).strip()
+                bk_frac = parse_exact_fraction(bk_str)
             except Exception as exc:
                 check_lines.append(
                     f"Claim type gating: FAILED: Invalid best_known Fraction: {exc}"
@@ -563,6 +466,18 @@ async def async_verify_certificate(
                     f"({claimed_frac}) > best_known ({bk_frac}), margin: {margin} <= 0"
                 )
                 return False, check_lines, None, None
+
+            if "." in bk_str and "/" not in bk_str:
+                frac_digits = len(bk_str.split(".")[1])
+                required_margin = Fraction(1, 10**frac_digits)
+                if margin < required_margin:
+                    check_lines.append(
+                        f"Claim type gating: FAILED: Record claim margin {margin} is "
+                        f"less than required resolution 10^-{frac_digits} "
+                        f"({required_margin}) for rounded decimal baseline {bk_str}"
+                    )
+                    return False, check_lines, None, None
+
             check_lines.append(f"Claim type gating: OK (record with margin +{margin})")
 
         score_decimal = format_fraction_40_decimals(res_exact.exact_score)
@@ -603,9 +518,8 @@ async def async_make_certificate(
     run_id: str | None = None,
     run_dir: Path | str | None = None,
     construction_path: Path | str | None = None,
-    best_known_value: str | None = None,
-    best_known_url: str | None = None,
-    best_known_date: str | None = None,
+    baseline_id: str | None = None,
+    tolerance: str = "0/1",
     problem_id: str = "circle_packing_n26",
     runs_dir: Path | None = None,
     problem_dir: Path | None = None,
@@ -613,11 +527,11 @@ async def async_make_certificate(
     """Generate and issue a verified QED certificate from a run or construction.
 
     Workflow:
-    1. Loads construction from file, or loads best_program.py from run directory
+    1. Loads raw construction JSON, or loads best_program.py from run directory
        and executes it in a sandboxed subprocess to obtain float centers and radii.
     2. Converts with make_valid to exact rational coordinates and radii.
     3. Verifies construction with BOTH checkers (verifier_exact and independent).
-    4. Checks claim_type rules (refusing 'record' unless margin > 0).
+    4. Checks claim_type rules with baselines.json and exact arithmetic.
     5. Assembles certificate dictionary and signs with canonical SHA-256.
     6. Writes certificate to out_path.
     """
@@ -649,8 +563,11 @@ async def async_make_certificate(
             raise FileNotFoundError(f"Construction file not found: {c_path}")
         c_raw = await async_read_file_bytes(c_path)
         c_data = json.loads(c_raw.decode("utf-8"))
-        if "construction" in c_data and isinstance(c_data["construction"], dict):
-            c_data = c_data["construction"]
+        if not isinstance(c_data, dict) or set(c_data.keys()) != {"centers", "radii"}:
+            raise ValueError(
+                "Construction file must be a JSON object containing exactly 'centers' "
+                "and 'radii' keys (certificate JSON is not accepted)"
+            )
         exact_centers_str = [[str(c[0]), str(c[1])] for c in c_data["centers"]]
         exact_radii_str = [str(r) for r in c_data["radii"]]
         claimed_score_frac = sum(parse_exact_fraction(r) for r in exact_radii_str)
@@ -774,37 +691,105 @@ async def async_make_certificate(
     finally:
         tmp_file.unlink(missing_ok=True)
 
-    # Gating checks for claim_type
+    # Gating checks and baselines handling
     best_known_dict: dict[str, Any] | None = None
-    if claim_type == "record":
-        if not best_known_value:
-            raise ValueError("Record claim requires --best-known-value")
-        bk_frac = parse_exact_fraction(best_known_value)
-        margin = claimed_score_frac - bk_frac
-        if margin <= 0:
+    best_known_tolerance_val: str | None = None
+
+    if claim_type == "demonstration":
+        if baseline_id is not None:
             raise ValueError(
-                f"Record claim refused: margin {margin} is not strictly positive "
-                f"(claimed {claimed_score_frac} <= best known {bk_frac})"
+                "Baseline (--baseline) is not allowed for demonstration claims"
             )
+        if tolerance != "0/1":
+            raise ValueError(
+                "Tolerance (--tolerance) is only valid for reproduction claims, "
+                "not demonstration"
+            )
+
+    elif claim_type in {"reproduction", "record"}:
+        if not baseline_id:
+            raise ValueError(
+                f"Baseline (--baseline <id>) is required for {claim_type} claims"
+            )
+
+        baselines = await async_load_problem_baselines(base_prob_dir)
+        matched_entry: dict[str, Any] | None = None
+        for entry in baselines:
+            if entry.get("id") == baseline_id:
+                matched_entry = entry
+                break
+
+        if matched_entry is None:
+            raise ValueError(
+                f"Baseline '{baseline_id}' not found in baselines.json for "
+                f"problem '{problem_id}'"
+            )
+
+        if not matched_entry.get("human_verified", False):
+            raise ValueError(
+                f"Baseline '{baseline_id}' is not human_verified in baselines.json"
+            )
+
+        quote = matched_entry.get("quote", "")
+        if len(quote.split()) > 15:
+            raise ValueError(
+                f"Baseline '{baseline_id}' quote exceeds 15 words limit: {quote!r}"
+            )
+
         best_known_dict = {
-            "value": best_known_value,
-            "source_url": best_known_url or "",
-            "retrieved_date": (
-                best_known_date or datetime.now(UTC).strftime("%Y-%m-%d")
-            ),
+            "value": matched_entry["value"],
+            "source_url": matched_entry["source_url"],
+            "retrieved_date": matched_entry["retrieved_date"],
         }
-    elif claim_type == "reproduction":
-        if not best_known_value:
-            raise ValueError("Reproduction claim requires --best-known-value")
-        best_known_dict = {
-            "value": best_known_value,
-            "source_url": best_known_url or "",
-            "retrieved_date": (
-                best_known_date or datetime.now(UTC).strftime("%Y-%m-%d")
-            ),
-        }
-    elif claim_type == "demonstration":
-        best_known_dict = None
+        bk_str = str(best_known_dict["value"]).strip()
+        bk_frac = parse_exact_fraction(bk_str)
+
+        if claim_type == "reproduction":
+            # Validate tolerance
+            if not isinstance(tolerance, str) or not FRACTION_PATTERN.match(tolerance):
+                raise ValueError(
+                    f"Tolerance must be a positive 'p/q' string, got {tolerance!r}"
+                )
+            tp, tq = map(int, tolerance.split("/"))
+            tol_frac = Fraction(tp, tq)
+            if tol_frac.numerator != tp or tol_frac.denominator != tq:
+                raise ValueError(
+                    f"Tolerance {tolerance!r} is not in lowest terms "
+                    f"(reduced: {tol_frac.numerator}/{tol_frac.denominator})"
+                )
+            if tol_frac < 0 or tol_frac > Fraction(1, 1000):
+                raise ValueError(f"Tolerance {tolerance!r} must be in [0, 1/1000]")
+
+            threshold = bk_frac * (Fraction(1, 1) - tol_frac)
+            if claimed_score_frac < threshold:
+                raise ValueError(
+                    f"Reproduction claim refused: score {claimed_score_frac} < "
+                    f"threshold {threshold} (best known {bk_frac} with tolerance "
+                    f"{tol_frac})"
+                )
+            best_known_tolerance_val = tolerance
+
+        elif claim_type == "record":
+            if tolerance != "0/1":
+                raise ValueError(
+                    "Tolerance (--tolerance) is only valid for reproduction claims, "
+                    "not record"
+                )
+            margin = claimed_score_frac - bk_frac
+            if margin <= 0:
+                raise ValueError(
+                    f"Record claim refused: margin {margin} is not strictly positive "
+                    f"(claimed {claimed_score_frac} <= best known {bk_frac})"
+                )
+            if "." in bk_str and "/" not in bk_str:
+                frac_digits = len(bk_str.split(".")[1])
+                required_margin = Fraction(1, 10**frac_digits)
+                if margin < required_margin:
+                    raise ValueError(
+                        f"Record claim refused: margin {margin} is less than required "
+                        f"resolution 10^-{frac_digits} ({required_margin}) for "
+                        f"rounded decimal baseline {bk_str}"
+                    )
 
     # Compute source hashes
     spec_sha = await async_compute_sha256_file(spec_path)
@@ -822,6 +807,7 @@ async def async_make_certificate(
         },
         "claimed_score": claimed_score_str,
         "best_known": best_known_dict,
+        "best_known_tolerance": best_known_tolerance_val,
         "run": run_meta,
         "verifiers": {
             "exact_sha256": exact_sha,
@@ -851,9 +837,8 @@ def make_certificate(
     run_id: str | None = None,
     run_dir: Path | str | None = None,
     construction_path: Path | str | None = None,
-    best_known_value: str | None = None,
-    best_known_url: str | None = None,
-    best_known_date: str | None = None,
+    baseline_id: str | None = None,
+    tolerance: str = "0/1",
     problem_id: str = "circle_packing_n26",
     runs_dir: Path | None = None,
     problem_dir: Path | None = None,
@@ -866,9 +851,8 @@ def make_certificate(
             run_id=run_id,
             run_dir=run_dir,
             construction_path=construction_path,
-            best_known_value=best_known_value,
-            best_known_url=best_known_url,
-            best_known_date=best_known_date,
+            baseline_id=baseline_id,
+            tolerance=tolerance,
             problem_id=problem_id,
             runs_dir=runs_dir,
             problem_dir=problem_dir,
