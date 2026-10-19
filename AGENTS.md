@@ -13,3 +13,4 @@ Hard rules
 8. If the spec is ambiguous, stop and ask. Do not guess silently.
 9. Do not add dependencies without stating why.
 10. Final report format: What I did / Commands run (with real output) / Files changed / What I am unsure about / Suggested next step.
+11. Never report the result of a background or still-running task. Wait until it has finished, quote the log file it wrote, and give the command, start time and finish time. If it has not finished, say so. Never write expected output.
